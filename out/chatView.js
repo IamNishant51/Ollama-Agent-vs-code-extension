@@ -65,11 +65,12 @@ class OllamaChatViewProvider {
                     const cfg = vscode.workspace.getConfiguration('ollamaAgent');
                     const systemPrompt = cfg.get('systemPrompt', 'You are a helpful coding assistant.');
                     const provider = cfg.get('provider', 'ollama');
+                    const mode = cfg.get('mode', 'read');
                     const hasOpenAIKey = !!(await this._context.secrets.get('ollamaAgent.openaiKey'));
                     const hasAnthropicKey = !!(await this._context.secrets.get('ollamaAgent.anthropicKey'));
                     const hasOtherKey = !!(await this._context.secrets.get('ollamaAgent.otherKey'));
                     const hasProviderKey = provider === 'openai' ? hasOpenAIKey : provider === 'anthropic' ? hasAnthropicKey : provider === 'other' ? hasOtherKey : true;
-                    webview.postMessage({ type: 'settings', systemPrompt, provider, hasProviderKey });
+                    webview.postMessage({ type: 'settings', systemPrompt, provider, mode, hasProviderKey });
                     break;
                 }
                 case 'saveSecret': {
@@ -101,13 +102,16 @@ class OllamaChatViewProvider {
                     break;
                 }
                 case 'saveConfig': {
-                    const { provider, systemPrompt } = msg;
+                    const { provider, systemPrompt, mode } = msg;
                     const cfg = vscode.workspace.getConfiguration('ollamaAgent');
                     if (provider) {
                         await cfg.update('provider', provider, vscode.ConfigurationTarget.Global);
                     }
                     if (typeof systemPrompt === 'string') {
                         await cfg.update('systemPrompt', systemPrompt, vscode.ConfigurationTarget.Global);
+                    }
+                    if (mode === 'read' || mode === 'agent') {
+                        await cfg.update('mode', mode, vscode.ConfigurationTarget.Global);
                     }
                     webview.postMessage({ type: 'saved', what: 'config' });
                     break;
@@ -119,16 +123,23 @@ class OllamaChatViewProvider {
         const nonce = getNonce();
         const styles = `
       :root { color-scheme: dark; }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { height: 100%; }
       body {
         font-family: Inter, 'Segoe UI', sans-serif;
         margin: 0;
         color: #e6e6e6;
         background: #0e0e0e;
         height: 100%;
+        display: flex;
+        overflow: hidden; /* let inner content manage scrolling */
       }
       .wrap {
         padding: 16px;
         display: flex; flex-direction: column; gap: 14px;
+        height: 100%;
+        min-height: 0;
+        overflow: auto; /* scroll only inner content */
         backdrop-filter: blur(12px);
         background: rgba(20, 20, 20, 0.6);
         border-top: 1px solid rgba(255, 255, 255, 0.05);
@@ -143,8 +154,8 @@ class OllamaChatViewProvider {
         padding: 12px;
         display: flex; flex-direction: column; gap: 10px;
       }
-      .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
-      .label { width: 120px; font-size: 12px; opacity: .85; }
+      .row { display:flex; gap:10px; align-items:flex-start; flex-wrap: wrap; }
+      .label { flex: 0 0 120px; max-width: 120px; font-size: 12px; opacity: .85; }
 
       select, textarea, input[type=text], input[type=password] {
         width: 100%;
@@ -170,7 +181,16 @@ class OllamaChatViewProvider {
 
       .subtle { opacity: .75; font-size: 12px; }
       .spacer { flex: 1; }
-      @media (max-width: 700px) { .label { width: 100%; } }
+      /* Responsive adjustments */
+      @media (max-width: 900px) {
+        .label { flex: 1 1 100%; max-width: 100%; }
+        .row > *:not(.label) { flex: 1 1 100%; }
+      }
+      @media (max-width: 480px) {
+        .wrap { padding: 12px; }
+        .section { padding: 10px; }
+        .btn { width: 100%; }
+      }
     `;
         return `<!DOCTYPE html>
 <html lang="en">
@@ -204,6 +224,13 @@ class OllamaChatViewProvider {
         </div>
       </div>
       <div class="row">
+        <span class="label">Mode</span>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="mode" value="read" checked> Read (plan only)</label>
+          <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="mode" value="agent"> Agent (auto-apply edits)</label>
+        </div>
+      </div>
+      <div class="row">
         <span class="label">API Key</span>
         <input id="apiKey" type="password" placeholder="Paste API key here" />
         <button class="btn" id="saveKey">Save</button>
@@ -228,6 +255,9 @@ class OllamaChatViewProvider {
       if (!s) return;
       if (s.provider) document.getElementById('provider').value = s.provider;
       if (typeof s.systemPrompt === 'string') document.getElementById('systemPrompt').value = s.systemPrompt;
+      // mode radios
+      const modes = document.querySelectorAll('input[name="mode"]');
+      modes.forEach((el) => { if (el.value === (s.mode || 'read')) el.checked = true; });
       document.getElementById('apiKey').disabled = (s.provider === 'ollama');
       document.getElementById('saveKey').disabled = (s.provider === 'ollama');
       document.getElementById('delKey').disabled = (s.provider === 'ollama');
@@ -249,7 +279,9 @@ class OllamaChatViewProvider {
     document.getElementById('saveConfig')?.addEventListener('click', () => {
       const provider = (document.getElementById('provider') || {}).value;
       const systemPrompt = (document.getElementById('systemPrompt') || {}).value;
-      vscode.postMessage({ type: 'saveConfig', provider, systemPrompt });
+      const m = document.querySelector('input[name="mode"]:checked');
+      const mode = m ? m.value : 'read';
+      vscode.postMessage({ type: 'saveConfig', provider, systemPrompt, mode });
     });
 
     window.addEventListener('message', (ev) => {

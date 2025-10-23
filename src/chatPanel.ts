@@ -44,6 +44,20 @@ export class OllamaChatPanel {
           }
           break;
         }
+        case 'requestConfig': {
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const mode = cfg.get<string>('mode', 'read');
+          this.panel?.webview.postMessage({ type: 'config', mode });
+          break;
+        }
+        case 'previewEdits': {
+          try {
+            await vscode.commands.executeCommand('ollamaAgent.previewEdits', msg.payload);
+          } catch (e: any) {
+            this.panel?.webview.postMessage({ type: 'error', message: String(e?.message || e) });
+          }
+          break;
+        }
         case 'startChat': {
           const models: string[] = msg.models || [];
           const prompt: string = msg.prompt || '';
@@ -71,12 +85,24 @@ export class OllamaChatPanel {
         case 'insertText': {
           const text: string = msg.text || '';
           const editor = vscode.window.activeTextEditor;
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const mode = cfg.get<string>('mode', 'read');
+          if (mode !== 'agent') {
+            vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to allow changes.');
+            break;
+          }
           if (editor && text) {
             await editor.edit((ed) => ed.insert(editor.selection.active, text));
           }
           break;
         }
         case 'applyEdits': {
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const mode = cfg.get<string>('mode', 'read');
+          if (mode !== 'agent') {
+            vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply edits.');
+            break;
+          }
           await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', msg.payload);
           break;
         }

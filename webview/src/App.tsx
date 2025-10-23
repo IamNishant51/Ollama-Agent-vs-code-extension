@@ -11,7 +11,8 @@ type ChatEvent =
   | { type: 'chatChunk'; model: string; text: string }
   | { type: 'chatDone'; model: string }
   | { type: 'error'; message: string }
-  | { type: 'chatError'; model: string; message: string };
+  | { type: 'chatError'; model: string; message: string }
+  | { type: 'config'; mode: 'read' | 'agent' };
 
 type Thread = {
   id: string;
@@ -31,8 +32,9 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentId, setCurrentId] = useState<string>('');
-  const [historyOpen, setHistoryOpen] = useState<boolean>(true);
+  const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
+  const [mode, setMode] = useState<'read' | 'agent'>('read');
 
   useEffect(() => {
     injectStyles();
@@ -42,6 +44,9 @@ export default function App() {
       if (state && Array.isArray(state.threads)) {
         setThreads(state.threads);
         setCurrentId(state.currentId || (state.threads[0]?.id || ''));
+        if (typeof state.historyOpen === 'boolean') {
+          setHistoryOpen(state.historyOpen);
+        }
         // Load the current thread HTML into the content area
         setTimeout(() => {
           const t = (state.threads || []).find((x: Thread) => x.id === (state.currentId || ''));
@@ -65,6 +70,9 @@ export default function App() {
           break;
         case 'prefill':
           setPrompt(msg.text || '');
+          break;
+        case 'config':
+          setMode(msg.mode);
           break;
         case 'chatStart':
           setSending(false);
@@ -99,6 +107,7 @@ export default function App() {
     };
     window.addEventListener('message', onMessage);
     vscode.postMessage({ type: 'requestModels' });
+    vscode.postMessage({ type: 'requestConfig' });
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
@@ -225,6 +234,43 @@ export default function App() {
       });
       pre.appendChild(btn);
     });
+
+    // If the message contains an edits JSON block, add Review/Apply actions
+    try {
+      const payload = extractEditsFrom(txt);
+      if (payload && Array.isArray(payload.changes) && payload.changes.length > 0) {
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.gap = '6px';
+        actions.style.marginTop = '6px';
+        const review = document.createElement('button');
+        review.className = 'send';
+        review.textContent = 'Review edits';
+        review.addEventListener('click', () => vscode.postMessage({ type: 'previewEdits', payload }));
+        const apply = document.createElement('button');
+        apply.className = 'send';
+        apply.textContent = 'Apply edits';
+        apply.addEventListener('click', () => vscode.postMessage({ type: 'applyEdits', payload }));
+        actions.appendChild(review);
+        actions.appendChild(apply);
+        lastAssistant.parentElement?.appendChild(actions);
+        if (mode === 'agent') {
+          vscode.postMessage({ type: 'applyEdits', payload });
+        }
+      }
+    } catch {}
+  }
+
+  function extractEditsFrom(text: string): any | null {
+    // Look for ```edits ...``` or ```json ...``` code fence containing an object with "changes"
+    const fences = text.match(/```(edits|json)\n([\s\S]*?)```/i);
+    if (!fences) return null;
+    const raw = fences[2];
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && Array.isArray(obj.changes)) return obj;
+    } catch {}
+    return null;
   }
 
   function deriveTitle(text: string) {
@@ -243,7 +289,7 @@ export default function App() {
   function updateThread(id: string, patch: Partial<Thread>) {
     setThreads((prev) => {
       const next = prev.map((t) => (t.id === id ? { ...t, ...patch } : t));
-      persistState(next, currentId);
+      persistState(next, currentId, historyOpen);
       return next;
     });
   }
@@ -263,7 +309,7 @@ export default function App() {
     if (t && contentRef.current) {
       contentRef.current.innerHTML = t.html || '';
     }
-    persistState(threads, id);
+    persistState(threads, id, historyOpen);
   }
 
   function newChat() {
@@ -274,7 +320,7 @@ export default function App() {
     setThreads(next);
     setCurrentId(t.id);
     if (contentRef.current) contentRef.current.innerHTML = '';
-    persistState(next, t.id);
+    persistState(next, t.id, historyOpen);
   }
 
   function deleteThread(id: string) {
@@ -286,12 +332,18 @@ export default function App() {
     }
     setThreads(next);
     setCurrentId(nextId);
-    persistState(next, nextId);
+    persistState(next, nextId, historyOpen);
   }
 
-  function persistState(thrs: Thread[], id: string) {
-    try { vscode.setState?.({ threads: thrs, currentId: id }); } catch {}
+  function persistState(thrs: Thread[], id: string, history: boolean) {
+    try { vscode.setState?.({ threads: thrs, currentId: id, historyOpen: history }); } catch {}
   }
+
+  useEffect(() => {
+    // Persist when history visibility toggles
+    persistState(threads, currentId, historyOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyOpen]);
 
   const styles = useMemo(() => ({
     container: {
@@ -377,6 +429,7 @@ export default function App() {
 function injectStyles() {
   const css = `
     :root { color-scheme: dark; }
+    html, body, #root { height: 100%; }
     body {
       font-family: Inter, 'Segoe UI', sans-serif;
       margin: 0;
@@ -384,12 +437,17 @@ function injectStyles() {
       background: #0e0e0e;
       display: flex;
       height: 100vh;
+      overflow: hidden; /* prevent page scroll; let content area handle it */
     }
+
+    #root { width: 100%; display: flex; }
 
     .panel {
       display: flex;
       flex-direction: column;
       width: 100%;
+      height: 100%;
+      min-height: 100vh;
       backdrop-filter: blur(12px);
       background: rgba(20, 20, 20, 0.6);
       border: 1px solid rgba(255, 255, 255, 0.05);
@@ -529,12 +587,15 @@ function injectStyles() {
       display: flex;
       flex-direction: column;
       min-width: 0;
+      min-height: 0; /* allow children to size correctly */
+      height: 100%;
       background: rgba(18,18,18,0.7);
       backdrop-filter: blur(14px);
     }
 
     .content {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 20px;
       display: flex;
@@ -579,6 +640,7 @@ function injectStyles() {
 
     /* Composer */
     .composer {
+      /* composer stays fixed at bottom of panel; content scrolls */
       position: sticky;
       bottom: 0;
       background: rgba(20,20,20,0.85);

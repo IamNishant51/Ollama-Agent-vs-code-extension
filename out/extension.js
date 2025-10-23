@@ -40,6 +40,18 @@ const ollamaClient_js_1 = require("./ollamaClient.js");
 const chatView_js_1 = require("./chatView.js");
 const chatPanel_1 = require("./chatPanel");
 let chatProvider;
+class EditPreviewProvider {
+    _onDidChange = new vscode.EventEmitter();
+    onDidChange = this._onDidChange.event;
+    store = new Map();
+    set(uri, content) {
+        this.store.set(uri.toString(), content);
+        this._onDidChange.fire(uri);
+    }
+    provideTextDocumentContent(uri) {
+        return this.store.get(uri.toString()) ?? '';
+    }
+}
 function activate(context) {
     const config = vscode.workspace.getConfiguration('ollamaAgent');
     const host = config.get('host', 'localhost');
@@ -51,6 +63,9 @@ function activate(context) {
         webviewOptions: { retainContextWhenHidden: true }
     }));
     const chatPanel = new chatPanel_1.OllamaChatPanel(context.extensionUri, client);
+    // Register preview content provider for diffs
+    const previewProvider = new EditPreviewProvider();
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('ollama-edit', previewProvider));
     // Commands
     context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.chat', async () => {
         if (chatPanel.isVisible()) {
@@ -58,6 +73,50 @@ function activate(context) {
         }
         else {
             chatPanel.show(vscode.ViewColumn.Beside);
+        }
+    }));
+    // Preview edits before applying: opens diffs for each file and offers Apply/Discard
+    context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.previewEdits', async (payload) => {
+        if (!payload || !Array.isArray(payload.changes)) {
+            vscode.window.showWarningMessage('No edits to preview.');
+            return;
+        }
+        const byFile = new Map();
+        for (const ch of payload.changes) {
+            if (!ch || !ch.uri) {
+                continue;
+            }
+            const arr = byFile.get(ch.uri) || [];
+            arr.push(ch);
+            byFile.set(ch.uri, arr);
+        }
+        const sessionId = String(Date.now());
+        const openDiffs = [];
+        for (const [uriStr, changes] of byFile.entries()) {
+            const fileUri = vscode.Uri.parse(uriStr);
+            // read original content if exists
+            let original = '';
+            try {
+                const data = await vscode.workspace.fs.readFile(fileUri);
+                original = Buffer.from(data).toString('utf8');
+            }
+            catch {
+                original = '';
+            }
+            const modified = applyChangesToContent(original, changes);
+            const left = vscode.Uri.parse(`ollama-edit://preview/original${fileUri.path}?s=${sessionId}`);
+            const right = vscode.Uri.parse(`ollama-edit://preview/modified${fileUri.path}?s=${sessionId}`);
+            previewProvider.set(left, original);
+            previewProvider.set(right, modified);
+            await vscode.commands.executeCommand('vscode.diff', left, right, `Preview: ${fileUri.fsPath}`);
+            openDiffs.push(right);
+        }
+        const choice = await vscode.window.showInformationMessage(`Previewing ${byFile.size} file${byFile.size === 1 ? '' : 's'} to edit.`, { modal: false }, 'Apply All', 'Discard');
+        if (choice === 'Apply All') {
+            await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', payload);
+        }
+        else if (choice === 'Discard') {
+            // no-op; diffs remain open for review
         }
     }));
     // Status bar shortcut to open the chat panel on the right
@@ -137,4 +196,39 @@ function activate(context) {
     }));
 }
 function deactivate() { }
+function applyChangesToContent(original, changes) {
+    // apply range-based or full replacements; handle create/newText with no range
+    // Normalize line endings to \n
+    let text = original.replace(/\r\n/g, '\n');
+    const withRanges = changes.filter((c) => c && typeof c.newText === 'string' && c.range);
+    const withoutRanges = changes.filter((c) => c && typeof c.newText === 'string' && !c.range);
+    if (withRanges.length > 0) {
+        // convert ranges to offsets and apply from end to start
+        const lines = text.split('\n');
+        function off(pos) {
+            let o = 0;
+            for (let i = 0; i < pos.line; i++) {
+                o += (lines[i] ?? '').length + 1; // +1 for \n
+            }
+            return o + pos.character;
+        }
+        const edits = withRanges
+            .map((c) => {
+            const s = off(c.range.start);
+            const e = off(c.range.end);
+            return { start: Math.max(0, s), end: Math.max(0, e), text: String(c.newText) };
+        })
+            .sort((a, b) => b.start - a.start);
+        for (const ed of edits) {
+            const before = text.slice(0, ed.start);
+            const after = text.slice(ed.end);
+            text = before + ed.text + after;
+        }
+    }
+    else if (withoutRanges.length > 0) {
+        // if no ranges specified, take the first and replace whole file
+        text = String(withoutRanges[0].newText);
+    }
+    return text;
+}
 //# sourceMappingURL=extension.js.map

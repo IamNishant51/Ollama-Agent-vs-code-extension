@@ -1,6 +1,6 @@
 {
   "name": "ollama-agent",
-  "publisher": "IamNishant51",
+  "publisher": "NishantUnavane",
   "displayName": "ollama-agent",
   "description": "A Vs-code extension for locally downloaded ollama models to convert them into ai -agent",
   "version": "0.0.1",
@@ -38,6 +38,12 @@
           "enum": ["ollama", "openai", "anthropic", "other"],
           "default": "ollama",
           "description": "Default AI provider to use in the chat panel"
+        },
+        "ollamaAgent.mode": {
+          "type": "string",
+          "enum": ["read", "agent"],
+          "default": "read",
+          "description": "Read: never auto-apply edits; Agent: auto-apply edits suggested by the AI"
         }
       }
     },

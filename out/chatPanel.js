@@ -75,6 +75,21 @@ class OllamaChatPanel {
                     }
                     break;
                 }
+                case 'requestConfig': {
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const mode = cfg.get('mode', 'read');
+                    this.panel?.webview.postMessage({ type: 'config', mode });
+                    break;
+                }
+                case 'previewEdits': {
+                    try {
+                        await vscode.commands.executeCommand('ollamaAgent.previewEdits', msg.payload);
+                    }
+                    catch (e) {
+                        this.panel?.webview.postMessage({ type: 'error', message: String(e?.message || e) });
+                    }
+                    break;
+                }
                 case 'startChat': {
                     const models = msg.models || [];
                     const prompt = msg.prompt || '';
@@ -104,12 +119,24 @@ class OllamaChatPanel {
                 case 'insertText': {
                     const text = msg.text || '';
                     const editor = vscode.window.activeTextEditor;
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const mode = cfg.get('mode', 'read');
+                    if (mode !== 'agent') {
+                        vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to allow changes.');
+                        break;
+                    }
                     if (editor && text) {
                         await editor.edit((ed) => ed.insert(editor.selection.active, text));
                     }
                     break;
                 }
                 case 'applyEdits': {
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const mode = cfg.get('mode', 'read');
+                    if (mode !== 'agent') {
+                        vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply edits.');
+                        break;
+                    }
                     await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', msg.payload);
                     break;
                 }
