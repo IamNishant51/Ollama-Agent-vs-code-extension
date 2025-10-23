@@ -119,18 +119,57 @@ class OllamaChatViewProvider {
         const nonce = getNonce();
         const styles = `
       :root { color-scheme: dark; }
-      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); height:100%; }
-      .wrap { padding: 16px; display:flex; flex-direction:column; gap: 12px; }
-      .title { font-weight:600; font-size: 13px; }
+      body {
+        font-family: Inter, 'Segoe UI', sans-serif;
+        margin: 0;
+        color: #e6e6e6;
+        background: #0e0e0e;
+        height: 100%;
+      }
+      .wrap {
+        padding: 16px;
+        display: flex; flex-direction: column; gap: 14px;
+        backdrop-filter: blur(12px);
+        background: rgba(20, 20, 20, 0.6);
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .title { font-weight: 600; font-size: 14px; color: #fff; }
       .hint { opacity: .8; font-size: 12px; }
-      .section { border: 1px solid var(--vscode-panel-border); background: color-mix(in srgb, var(--vscode-sideBar-background) 85%, var(--vscode-editor-foreground) 5%); border-radius:8px; padding: 12px; display:flex; flex-direction:column; gap:8px; }
-      .row { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
-      .label { width: 120px; font-size: 12px; opacity: .9; }
-      input[type=text], input[type=password], select, textarea { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
-      textarea { min-height: 80px; resize: vertical; }
-      .btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
-      .btn:hover { background: var(--vscode-button-hoverBackground); }
-      .subtle { opacity: .7; font-size: 12px; }
+
+      .section {
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(25,25,25,0.7);
+        border-radius: 12px;
+        padding: 12px;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+      .label { width: 120px; font-size: 12px; opacity: .85; }
+
+      select, textarea, input[type=text], input[type=password] {
+        width: 100%;
+        background: rgba(30,30,30,0.9);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: #e6e6e6;
+        border-radius: 10px;
+        padding: 8px 10px;
+      }
+      textarea { min-height: 90px; resize: vertical; border-radius: 12px; }
+
+      .btn {
+        background: rgba(255,255,255,0.08);
+        color: #e6e6e6;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 10px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: all .2s ease;
+      }
+      .btn:hover { background: rgba(255,255,255,0.12); transform: translateY(-1px); }
+      .btn.primary { background: linear-gradient(135deg, #1a73e8, #1559b3); color:#fff; border:none; }
+
+      .subtle { opacity: .75; font-size: 12px; }
+      .spacer { flex: 1; }
       @media (max-width: 700px) { .label { width: 100%; } }
     `;
         return `<!DOCTYPE html>
@@ -148,18 +187,21 @@ class OllamaChatViewProvider {
     <div class="hint">Open the chat on the right, and manage keys and settings here.</div>
 
     <div class="section">
-      <div class="row"><span class="label">Open Chat</span><button class="btn" id="open">Open</button></div>
+      <div class="row"><span class="label">Open Chat</span><button class="btn primary" id="open">Open</button></div>
     </div>
 
     <div class="section">
       <div class="row">
         <span class="label">Provider</span>
-        <select id="provider">
-          <option value="ollama">Ollama (local)</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="other">Other</option>
-        </select>
+        <div style="position:relative; min-width: 200px; flex:1;">
+          <select id="provider" style="appearance:none; -webkit-appearance:none; -moz-appearance:none; padding-right:32px; border-radius:999px;">
+            <option value="ollama">Ollama (local)</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="other">Other</option>
+          </select>
+          <span style="position:absolute; right:10px; top:50%; transform: translateY(-50%); font-size:10px; opacity:.8; pointer-events:none;">▼</span>
+        </div>
       </div>
       <div class="row">
         <span class="label">API Key</span>
@@ -171,9 +213,9 @@ class OllamaChatViewProvider {
     </div>
 
     <div class="section">
-      <div class="row"><span class="label">System Prompt</span></div>
-      <textarea id="systemPrompt" placeholder="You are a helpful coding assistant."></textarea>
-      <div class="row"><span class="spacer"></span><button class="btn" id="saveConfig">Save Settings</button></div>
+  <div class="row"><span class="label">System Prompt</span></div>
+  <textarea id="systemPrompt" placeholder="You are a helpful coding assistant."></textarea>
+  <div class="row"><span class="spacer"></span><button class="btn primary" id="saveConfig">Save Settings</button></div>
     </div>
   </div>
   <script nonce="${nonce}">
