@@ -8,6 +8,7 @@ type ChatEvent =
   | { type: 'models'; models: string[] }
   | { type: 'prefill'; text: string }
   | { type: 'chatStart'; model: string }
+  | { type: 'chatResume'; model: string }
   | { type: 'chatChunk'; model: string; text: string }
   | { type: 'chatDone'; model: string }
   | { type: 'error'; message: string }
@@ -26,6 +27,7 @@ export default function App() {
   const [selected, setSelected] = useState<string>('');
   const [prompt, setPrompt] = useState('');
   const [status, setStatus] = useState<'Ready' | 'Streaming' | 'Error'>('Ready');
+  const [paused, setPaused] = useState(false);
   const [pending, setPending] = useState(0);
   const [sending, setSending] = useState(false);
   const [useChat, setUseChat] = useState(true);
@@ -76,12 +78,17 @@ export default function App() {
           break;
         case 'chatStart':
           setSending(false);
+          setPaused(false);
           setPending((p) => {
             const np = p + 1;
             setStatus('Streaming');
             return np;
           });
           appendAssistant(msg.model, true);
+          break;
+        case 'chatResume':
+          setPaused(false);
+          setStatus('Streaming');
           break;
         case 'chatChunk':
           appendAssistantChunk(msg.text);
@@ -92,6 +99,7 @@ export default function App() {
             setStatus(np > 0 ? 'Streaming' : 'Ready');
             return np;
           });
+          setPaused(false);
           finalizeLastAssistant();
           saveSnapshot();
           break;
@@ -120,6 +128,18 @@ export default function App() {
     setStatus('Streaming');
     vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat });
     setPrompt('');
+  }
+
+  function togglePause() {
+    if (paused) {
+      vscode.postMessage({ type: 'resume' });
+      setPaused(false);
+      setStatus('Streaming');
+    } else {
+      vscode.postMessage({ type: 'pause' });
+      setPaused(true);
+      setStatus('Ready');
+    }
   }
 
   function appendUser(text: string) {
@@ -379,8 +399,11 @@ export default function App() {
             </select>
           </div>
         </div>
-        <span className="tag">{status}{status === 'Streaming' ? <span className="dot-pulse" /> : null}</span>
+        <span className="tag">{paused ? 'Paused' : status}{(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}</span>
         <span className="spacer" />
+        {(sending || pending > 0) && (
+          <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
+        )}
         <button className="btn secondary" onClick={newChat}>New Chat</button>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API

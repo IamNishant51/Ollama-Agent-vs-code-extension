@@ -171,6 +171,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('ollamaAgent.applyWorkspaceEdit', async (payload: any) => {
+      const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+      const mode = cfg.get<string>('mode', 'read');
+      if (mode !== 'agent') {
+        vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply edits.');
+        return;
+      }
       // payload: { changes: Array<{ uri: string, range?: { start: {line:number, character:number}, end:{line:number, character:number}}, newText?: string, create?: boolean }> }
       if (!payload || !Array.isArray(payload.changes)) {
         return;

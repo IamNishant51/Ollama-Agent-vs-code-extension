@@ -4,6 +4,11 @@ import { OllamaClient, OllamaMessage } from './ollamaClient.js';
 export class OllamaChatPanel {
   private panel: vscode.WebviewPanel | undefined;
   private pendingPrefill: string | undefined;
+  private controller: AbortController | undefined;
+  private currentModel: string | undefined;
+  private currentPrompt: string | undefined;
+  private currentUseChat: boolean = true;
+  private isPaused = false;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly client: OllamaClient) {}
 
@@ -65,18 +70,66 @@ export class OllamaChatPanel {
           if (!models.length || !prompt) {
             return;
           }
-          for (const m of models) {
-            this.panel?.webview.postMessage({ type: 'chatStart', model: m });
-            try {
-              const onToken = (t: string) => this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: t });
-              if (useChat) {
-                const messages: OllamaMessage[] = [{ role: 'user', content: prompt }];
-                await this.client.chat(m, messages, true, onToken);
-              } else {
-                await this.client.generate(m, prompt, true, onToken);
-              }
-              this.panel?.webview.postMessage({ type: 'chatDone', model: m });
-            } catch (e: any) {
+          // Only handle the first model for pause/resume tracking
+          const m = models[0];
+          this.currentModel = m;
+          this.currentPrompt = prompt;
+          this.currentUseChat = useChat;
+          this.isPaused = false;
+          this.controller?.abort();
+          this.controller = new AbortController();
+          this.panel?.webview.postMessage({ type: 'chatStart', model: m });
+          try {
+            const onToken = (t: string) => this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: t });
+            if (useChat) {
+              const messages: OllamaMessage[] = [{ role: 'user', content: prompt }];
+              await this.client.chat(m, messages, true, onToken, this.controller.signal);
+            } else {
+              await this.client.generate(m, prompt, true, onToken, this.controller.signal);
+            }
+            this.panel?.webview.postMessage({ type: 'chatDone', model: m });
+          } catch (e: any) {
+            if (this.isPaused) {
+              // Swallow abort error
+            } else {
+              this.panel?.webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
+            }
+          }
+          break;
+        }
+        case 'pause': {
+          if (this.controller) {
+            this.isPaused = true;
+            this.controller.abort();
+          }
+          break;
+        }
+        case 'resume': {
+          if (!this.currentModel || !this.currentPrompt) {
+            break;
+          }
+          const m = this.currentModel;
+          const useChat = this.currentUseChat;
+          this.isPaused = false;
+          this.controller = new AbortController();
+          this.panel?.webview.postMessage({ type: 'chatResume', model: m });
+          try {
+            const onToken = (t: string) => this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: t });
+            if (useChat) {
+              const messages: OllamaMessage[] = [
+                { role: 'user', content: this.currentPrompt },
+                { role: 'user', content: 'Continue' }
+              ];
+              await this.client.chat(m, messages, true, onToken, this.controller.signal);
+            } else {
+              const cont = this.currentPrompt + '\n\nContinue';
+              await this.client.generate(m, cont, true, onToken, this.controller.signal);
+            }
+            this.panel?.webview.postMessage({ type: 'chatDone', model: m });
+          } catch (e: any) {
+            if (this.isPaused) {
+              // ignore
+            } else {
               this.panel?.webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
             }
           }

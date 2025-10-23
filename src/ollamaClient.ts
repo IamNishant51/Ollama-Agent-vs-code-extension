@@ -22,12 +22,19 @@ export class OllamaClient {
     return models.map((m) => m.name);
   }
 
-  async generate(model: string, prompt: string, stream = true, onToken?: (t: string) => void): Promise<string> {
+  async generate(
+    model: string,
+    prompt: string,
+    stream = true,
+    onToken?: (t: string) => void,
+    signal?: AbortSignal
+  ): Promise<string> {
     const body = { model, prompt: this.buildPrompt(prompt), stream };
     const res = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
     if (!res.ok) {
       throw new Error(await res.text());
@@ -71,13 +78,15 @@ export class OllamaClient {
     model: string,
     messages: OllamaMessage[],
     stream = true,
-    onToken?: (t: string) => void
+    onToken?: (t: string) => void,
+    signal?: AbortSignal
   ): Promise<string> {
     const body = { model, messages: this.withSystem(messages), stream };
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
     if (!res.ok) {
       throw new Error(await res.text());
