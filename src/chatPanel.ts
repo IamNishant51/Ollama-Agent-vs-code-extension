@@ -115,7 +115,32 @@ ${snapshot}`;
         case 'requestConfig': {
           const cfg = vscode.workspace.getConfiguration('ollamaAgent');
           const mode = cfg.get<string>('mode', 'read');
-          this.panel?.webview.postMessage({ type: 'config', mode });
+          const host = cfg.get<string>('host', 'http://localhost');
+          const port = cfg.get<number>('port', 11434);
+          const apiKey = cfg.get<string>('apiKey', '');
+          this.panel?.webview.postMessage({ type: 'config', mode, host, port, apiKey });
+          break;
+        }
+        case 'updateConfig': {
+          try {
+            const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+            if (msg.mode !== undefined) {
+              await cfg.update('mode', msg.mode, vscode.ConfigurationTarget.Global);
+            }
+            if (msg.host !== undefined) {
+              await cfg.update('host', msg.host, vscode.ConfigurationTarget.Global);
+            }
+            if (msg.port !== undefined) {
+              await cfg.update('port', msg.port, vscode.ConfigurationTarget.Global);
+            }
+            if (msg.apiKey !== undefined) {
+              await cfg.update('apiKey', msg.apiKey, vscode.ConfigurationTarget.Global);
+            }
+            // Note: Connection settings will take effect after reloading the window
+            this.panel?.webview.postMessage({ type: 'configSaved' });
+          } catch (e: any) {
+            this.panel?.webview.postMessage({ type: 'error', message: 'Failed to save settings: ' + String(e?.message || e) });
+          }
           break;
         }
         case 'previewEdits': {
@@ -128,10 +153,35 @@ ${snapshot}`;
         }
         case 'startChat': {
           const models: string[] = msg.models || [];
-          const prompt: string = msg.prompt || '';
+          let prompt: string = msg.prompt || '';
           const useChat: boolean = !!msg.useChat;
+          const attachedFiles: string[] = msg.attachedFiles || [];
           if (!models.length || !prompt) {
             return;
+          }
+          // If there are attached files, read them and prepend to the prompt
+          if (attachedFiles.length > 0) {
+            const ws = vscode.workspace.workspaceFolders?.[0];
+            if (ws) {
+              let filesContext = '';
+              for (const fileName of attachedFiles) {
+                try {
+                  // Try to find the file in the workspace
+                  const files = await vscode.workspace.findFiles(`**/${fileName}`, '**/node_modules/**', 5);
+                  if (files.length > 0) {
+                    const doc = await vscode.workspace.openTextDocument(files[0]);
+                    const content = doc.getText();
+                    const relativePath = vscode.workspace.asRelativePath(files[0]);
+                    filesContext += `\n\n<file path="${relativePath}">\n${content}\n</file>\n`;
+                  }
+                } catch (e) {
+                  console.error(`Failed to read attached file ${fileName}:`, e);
+                }
+              }
+              if (filesContext) {
+                prompt = `${filesContext}\n\n${prompt}`;
+              }
+            }
           }
           // Slash recipes: quick actions routed to commands
           const slash = prompt.trim().match(/^\/(\w+)(?:\s+[\s\S]*)?$/i);
@@ -402,148 +452,151 @@ ${snapshot}`;
   }
 
   private async runAgentConversation(model: string, prompt: string) {
-    // Initialize conversation with system tool instructions
-  const toolInstr = `You are an intelligent coding agent running inside VS Code with full workspace access.
-
-CAPABILITIES:
-You can explore the workspace, read/write files, run commands, and edit code using tool calls in fenced blocks.
-
-TOOL SYNTAX:
-\`\`\`tool
-{"cmd":"listFiles","glob":"**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,json,md}","maxResults":500}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"readFile","path":"src/extension.ts","startLine":1,"endLine":200}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"search","query":"function\\\\s+\\\\w+","glob":"src/**/*.ts"}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"projectIndex","detail":true}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"createFile","path":"src/newFile.ts"}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"writeFile","path":"src/index.ts","content":"<FULL FILE CONTENT>"}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"renameFile","path":"src/old.ts","newPath":"src/new.ts"}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"deleteFile","path":"src/temp.ts"}
-\`\`\`
-
-\`\`\`tool
-{"cmd":"runTask","command":"npm test"}
-\`\`\`
-
-WORKFLOW:
-1. Start by getting project context (projectIndex or listFiles)
-2. Read relevant files to understand the code
-3. Search for patterns if needed
-4. Make informed changes
-
-OUTPUT EDITS:
-When ready to edit files, output an \`edits\` JSON block:
-\`\`\`edits
-{
-  "changes": [
-    {"uri":"relative/path/file.ts", "newText":"<FULL CONTENT>", "create":true},
-    {"uri":"existing.ts", "range":{"start":{"line":5,"character":0},"end":{"line":10,"character":0}}, "newText":"replacement"}
-  ]
-}
-\`\`\`
-
-BEST PRACTICES:
-- Always gather context before making changes
-- Read files partially (startLine/endLine) for large files
-- Use search to find patterns across files
-- Provide complete file content for writeFile
-- Test your changes when possible with runTask
-- Be precise and efficient`;
-    this.convo = [
-      { role: 'system', content: toolInstr },
-      { role: 'user', content: prompt }
-    ];
-    this.assistantBuffer = '';
-    let steps = 0;
-    const maxSteps = 8;
-
-    // Track visible output minus tool blocks to keep UI clean
-    let visibleSent = 0;
-    while (steps < maxSteps) {
-      steps++;
+    // NEW APPROACH: Detect file operations from user intent and execute them directly
+    // This is how Cursor actually works - it doesn't rely on the model to use tool syntax
+    
+    const fileMentions = prompt.match(/@([\w\-\.\/\\]+)/g);
+    const mentionedFiles = fileMentions ? fileMentions.map(m => m.substring(1)) : [];
+    
+    // Check if user wants to modify a file
+    const wantsToModify = /\b(remove|delete|clear|change|modify|edit|update|add|create|write)\b/i.test(prompt);
+    const wantsToRead = /\b(show|read|see|view|display|what|content)\b/i.test(prompt);
+    
+    // If user mentions a file and wants to modify it, execute the operation directly
+    if (mentionedFiles.length > 0 && wantsToModify) {
+      const targetFile = mentionedFiles[0];
+      
+      // Step 1: Read the file first
       this.panel?.webview.postMessage({ type: 'chatStart', model });
-      this.controller?.abort();
-      this.controller = new AbortController();
-      this.abortedForTool = false;
-      const onToken = (t: string) => {
-        this.assistantBuffer += t;
-        // Detect a completed tool block
-        const m = this.matchToolBlock(this.assistantBuffer);
-        if (m) {
-          this.abortedForTool = true;
-          this.controller?.abort();
-        }
-        // Send only the delta of assistant text with tool blocks stripped
-        const visible = this.stripToolBlocks(this.assistantBuffer);
-        const delta = visible.slice(visibleSent);
-        if (delta) {
-          this.panel?.webview.postMessage({ type: 'chatChunk', model, text: delta });
-          visibleSent = visible.length;
-        }
-      };
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `📖 Reading ${targetFile}...\n\n` });
+      
+      let fileContent = '';
       try {
-        await this.client.chat(model, this.convo, true, onToken, this.controller.signal);
-        // Completed without tool request
+        const readResult = await this.executeTool({ cmd: 'readFile', path: targetFile });
+        fileContent = readResult;
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✓ File read successfully\n\n` });
+      } catch (e) {
+        this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to read ${targetFile}: ${e}` });
+        return;
+      }
+      
+      // Step 2: Ask AI to generate the modified version
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `🤖 Generating modified version...\n\n` });
+      
+      // Special handling: if user wants to remove ALL code, just write empty file
+      const wantsEmpty = /remove\s+all|delete\s+all|clear\s+all|empty/i.test(prompt);
+      
+      if (wantsEmpty) {
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `💾 Clearing ${targetFile}...\n\n` });
+        
+        await this.executeTool({ 
+          cmd: 'writeFile', 
+          path: targetFile, 
+          content: '// File cleared by user request\n' 
+        });
+        
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully cleared ${targetFile}!\n\n` });
         this.panel?.webview.postMessage({ type: 'chatDone', model });
-        if (this.assistantBuffer.trim()) {
-          // Store the full buffer (including tool blocks) for the agent, but show stripped to user
-          this.convo.push({ role: 'assistant', content: this.assistantBuffer });
+        
+        // Open the file to show it's empty
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        if (ws) {
+          const uri = vscode.Uri.joinPath(ws.uri, targetFile);
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false });
         }
-        // Try to extract edits from the assistant output and apply them.
-        const payload = this.extractEditsFromText(this.assistantBuffer);
-        if (payload && Array.isArray(payload.changes) && payload.changes.length > 0) {
-          await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', payload);
-          return;
+        return;
+      }
+      
+      // For other modifications, use AI
+      const modificationPrompt = `Given this file content, apply the user's request and output ONLY the modified code.
+
+CURRENT FILE:
+${fileContent}
+
+USER REQUEST: ${prompt}
+
+OUTPUT RULES:
+- Output ONLY code, no explanations
+- NO markdown code fences (no \`\`\`)
+- NO "Here's the modified version" or similar text
+- Start directly with the code
+
+MODIFIED CODE:`;
+
+      let modifiedContent = '';
+      const messages: OllamaMessage[] = [{ role: 'user', content: modificationPrompt }];
+      
+      try {
+        // Don't show AI generation in chat - collect silently
+        await this.client.chat(model, messages, false, (token) => {
+          modifiedContent += token;
+        }, this.controller?.signal);
+        
+        // Aggressively clean the response
+        modifiedContent = modifiedContent.trim();
+        
+        // Remove any markdown code fences
+        modifiedContent = modifiedContent.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
+        
+        // Remove common AI preambles
+        const preambles = [
+          /^Here'?s?\s+the\s+modified.*?:\s*/i,
+          /^Here'?s?\s+the\s+updated.*?:\s*/i,
+          /^Modified\s+file.*?:\s*/i,
+          /^Updated\s+code.*?:\s*/i,
+          /^javascript\s*\n/i,
+          /^typescript\s*\n/i,
+          /^python\s*\n/i
+        ];
+        
+        for (const pattern of preambles) {
+          modifiedContent = modifiedContent.replace(pattern, '');
         }
-        // If no edits found, try to synthesize edits from the conversation.
-        await this.synthesizeAndApplyEdits(model);
+        
+        modifiedContent = modifiedContent.trim();
+        
+        // Step 3: Write the modified file
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `💾 Writing changes to ${targetFile}...\n\n` });
+        
+        await this.executeTool({ 
+          cmd: 'writeFile', 
+          path: targetFile, 
+          content: modifiedContent 
+        });
+        
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully modified ${targetFile}!\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatDone', model });
+        
+        // Open the file to show the changes
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        if (ws) {
+          const uri = vscode.Uri.joinPath(ws.uri, targetFile);
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        }
+        
         return;
       } catch (e) {
-        if (this.abortedForTool) {
-          // Extract tool block and execute
-          const match = this.matchToolBlock(this.assistantBuffer);
-          const pre = match?.pre || '';
-          const tool = match?.json || undefined;
-          if (pre.trim()) {
-            this.convo.push({ role: 'assistant', content: pre });
-          }
-          const result = tool ? await this.executeTool(tool) : 'No tool payload';
-          this.convo.push({ role: 'user', content: `TOOL_RESULT:\n${result}` });
-          this.panel?.webview.postMessage({ type: 'chatDone', model });
-          this.assistantBuffer = '';
-          visibleSent = 0;
-          continue; // next step
-        }
-        if (this.isPaused) {
-          // paused by user
-          return;
-        }
-        this.panel?.webview.postMessage({ type: 'chatError', model, message: String((e as any)?.message || e) });
+        this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to modify file: ${e}` });
         return;
       }
     }
-    // Max steps reached
-    this.panel?.webview.postMessage({ type: 'chatError', model, message: 'Agent step limit reached.' });
+    
+    // FALLBACK: For questions without file modifications, just do regular chat
+    this.panel?.webview.postMessage({ type: 'chatStart', model });
+    
+    const messages: OllamaMessage[] = [{ role: 'user', content: prompt }];
+    
+    try {
+      await this.client.chat(model, messages, false, (token) => {
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: token });
+      }, this.controller?.signal);
+      
+      this.panel?.webview.postMessage({ type: 'chatDone', model });
+    } catch (e) {
+      this.panel?.webview.postMessage({ type: 'chatError', model, message: String((e as any)?.message || e) });
+    }
   }
 
   private stripToolBlocks(text: string): string {

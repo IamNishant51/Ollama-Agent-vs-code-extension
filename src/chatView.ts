@@ -227,13 +227,6 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
       <div class="row">
-        <span class="label">Mode</span>
-        <div style="display:flex; gap:8px; align-items:center;">
-          <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="mode" value="read" checked> Read (plan only)</label>
-          <label style="display:flex; gap:6px; align-items:center;"><input type="radio" name="mode" value="agent"> Agent (auto-apply edits)</label>
-        </div>
-      </div>
-      <div class="row">
         <span class="label">API Key</span>
         <input id="apiKey" type="password" placeholder="Paste API key here" />
         <button class="btn" id="saveKey">Save</button>

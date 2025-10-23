@@ -13,12 +13,13 @@ type ChatEvent =
   | { type: 'chatDone'; model: string }
   | { type: 'error'; message: string }
   | { type: 'chatError'; model: string; message: string }
-  | { type: 'config'; mode: 'read' | 'agent' };
+  | { type: 'config'; mode: 'read' | 'agent'; host?: string; port?: number; apiKey?: string }
+  | { type: 'configSaved' };
 
 type Thread = {
   id: string;
   title: string;
-  html: string; // snapshot of the chat area
+  html: string; 
   createdAt: number;
 };
 
@@ -42,10 +43,16 @@ export default function App() {
   const [readmePlacement, setReadmePlacement] = useState('GitHub');
   const [readmeNotes, setReadmeNotes] = useState('');
   const [readmeDeep, setReadmeDeep] = useState(true);
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [apiKey, setApiKey] = useState('');
+  const [host, setHost] = useState('localhost');
+  const [port, setPort] = useState(11434);
+  const [showSettings, setShowSettings] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
     injectStyles();
-    // Restore webview state (threads and current thread)
+    
     try {
       const state = vscode.getState?.() || {};
       if (state && Array.isArray(state.threads)) {
@@ -54,13 +61,13 @@ export default function App() {
         if (typeof state.historyOpen === 'boolean') {
           setHistoryOpen(state.historyOpen);
         }
-        // Load the current thread HTML into the content area
+        
         setTimeout(() => {
           const t = (state.threads || []).find((x: Thread) => x.id === (state.currentId || ''));
           if (t && contentRef.current) contentRef.current.innerHTML = t.html || '';
         }, 0);
       } else {
-        // initialize with a fresh thread
+        
         const t = createNewThread();
         setThreads([t]);
         setCurrentId(t.id);
@@ -80,6 +87,13 @@ export default function App() {
           break;
         case 'config':
           setMode(msg.mode);
+          if (msg.host) setHost(msg.host);
+          if (msg.port) setPort(msg.port);
+          if (msg.apiKey) setApiKey(msg.apiKey);
+          break;
+        case 'configSaved':
+          setSavingSettings(false);
+          // Optionally show a success message or notification
           break;
         case 'chatStart':
           setSending(false);
@@ -117,7 +131,7 @@ export default function App() {
           saveSnapshot();
           break;
         default: {
-          // @ts-ignore: custom events
+          
           if ((msg as any).type === 'openReadmeGenerator') {
             setShowReadme(true);
           }
@@ -134,12 +148,18 @@ export default function App() {
   function send() {
     const model = selected || (models[0] || '');
     if (!model || !prompt.trim()) return;
+    
+    // Extract @ file mentions from prompt
+    const mentions = prompt.match(/@([\w\-\.\/]+)/g) || [];
+    const files = mentions.map(m => m.slice(1)); // Remove @ symbol
+    
     appendUser(prompt);
-    // Optimistic "sending" state until chatStart arrives
+    
     setSending(true);
     setStatus('Streaming');
-    vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat });
+    vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat, attachedFiles: files });
     setPrompt('');
+    setAttachedFiles([]);
   }
 
   function submitReadme() {
@@ -153,8 +173,29 @@ export default function App() {
       notes: readmeNotes,
       deep: readmeDeep
     });
-    // Also add a user bubble to mark the action
+    
     appendUser(`Generate a ${readmeStyle} README for ${readmePlacement}${readmeNotes ? ' with notes: ' + readmeNotes : ''}`);
+  }
+
+  function saveSettings() {
+    setSavingSettings(true);
+    vscode.postMessage({
+      type: 'updateConfig',
+      config: { host, port, apiKey }
+    });
+    setTimeout(() => {
+      setSavingSettings(false);
+      setShowSettings(false);
+    }, 800);
+  }
+
+  function toggleMode(newMode?: 'read' | 'agent') {
+    const targetMode = newMode || (mode === 'read' ? 'agent' : 'read');
+    setMode(targetMode);
+    vscode.postMessage({
+      type: 'updateConfig',
+      config: { mode: targetMode }
+    });
   }
 
   function togglePause() {
@@ -179,7 +220,7 @@ export default function App() {
     wrap.appendChild(bubble);
     root.appendChild(wrap);
     root.scrollTop = root.scrollHeight;
-    // Title the thread if it's new/default
+    
     const t = getCurrentThread();
     if (t && (t.title === 'New chat' || !t.title)) {
       const title = deriveTitle(text);
@@ -204,7 +245,7 @@ export default function App() {
   if (loading) bubble.textContent = '';
     wrap.appendChild(bubble);
 
-    // Copy icon on the assistant bubble
+    
     const copyIcon = document.createElement('button');
     copyIcon.className = 'copy-all';
     copyIcon.title = 'Copy response';
@@ -248,20 +289,45 @@ export default function App() {
   }
 
   function renderMarkdownLike(text: string) {
-    // Basic markdown-like rendering: code fences and inline code
+    // Escape HTML
     let html = escapeHtml(text);
-    // Fenced code blocks ```lang?\n...\n```
+    
+    // Handle code blocks with syntax highlighting classes
     html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
-      const l = lang ? ` class="language-${lang}"` : '';
-      return `<pre class="code"><code${l}>${escapeHtml(code)}</code></pre>`;
+      const language = lang || 'plaintext';
+      const highlighted = escapeHtml(code);
+      return `<pre class="code-block" data-lang="${language}"><code class="language-${language}">${highlighted}</code></pre>`;
     });
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, (_m, c) => `<code class="inline">${escapeHtml(c)}</code>`);
-    // Paragraphs
+    
+    // Handle inline code
+    html = html.replace(/`([^`]+)`/g, (_m, c) => `<code class="inline-code">${escapeHtml(c)}</code>`);
+    
+    // Handle bold
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    
+    // Handle italic
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    
+    // Handle lists
+    html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+    
+    // Handle headers
+    html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+    
+    // Handle paragraphs
     html = html
       .split(/\n\n+/)
-      .map((p) => (p.trim().startsWith('<pre') ? p : `<p>${p.replace(/\n/g, '<br/>')}</p>`))
+      .map((p) => {
+        if (p.trim().startsWith('<pre') || p.trim().startsWith('<h') || p.trim().startsWith('<ul') || p.trim().startsWith('<li')) {
+          return p;
+        }
+        return `<p>${p.replace(/\n/g, '<br/>')}</p>`;
+      })
       .join('');
+      
     return html;
   }
 
@@ -270,21 +336,69 @@ export default function App() {
     const txt = lastAssistant.textContent || '';
     lastAssistant.innerHTML = renderMarkdownLike(txt);
     lastDoneRef.current = lastAssistant;
-    // Add copy buttons for code blocks
-    const blocks = lastAssistant.querySelectorAll('pre.code');
+    
+    // Add copy buttons to code blocks
+    const blocks = lastAssistant.querySelectorAll('pre.code-block');
     blocks.forEach((pre) => {
+      const lang = pre.getAttribute('data-lang') || '';
+      const header = document.createElement('div');
+      header.className = 'code-header';
+      header.innerHTML = `<span class="code-lang">${lang}</span>`;
+      
       const btn = document.createElement('button');
-      btn.className = 'copy-code';
-      btn.textContent = 'Copy code';
+      btn.className = 'copy-code-btn';
+      btn.innerHTML = `
+        <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span class="copy-text">Copy</span>
+      `;
       btn.addEventListener('click', async () => {
         const codeEl = pre.querySelector('code');
         const code = codeEl?.textContent || '';
-        try { await navigator.clipboard.writeText(code); } catch {}
+        try { 
+          await navigator.clipboard.writeText(code);
+          btn.classList.add('copied');
+          const textEl = btn.querySelector('.copy-text');
+          if (textEl) textEl.textContent = 'Copied!';
+          setTimeout(() => {
+            btn.classList.remove('copied');
+            if (textEl) textEl.textContent = 'Copy';
+          }, 2000);
+        } catch {}
       });
-      pre.appendChild(btn);
+      header.appendChild(btn);
+      pre.insertBefore(header, pre.firstChild);
     });
 
-    // If the message contains an edits JSON block, add Review/Apply actions
+    // Re-add the copy-all button
+    const existingCopy = lastAssistant.querySelector('.copy-all');
+    if (!existingCopy) {
+      const copyIcon = document.createElement('button');
+      copyIcon.className = 'copy-all';
+      copyIcon.title = 'Copy response';
+      copyIcon.innerHTML = `
+        <svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      `;
+      copyIcon.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(txt);
+          copyIcon.classList.add('copied');
+          setTimeout(() => copyIcon.classList.remove('copied'), 1200);
+        } catch {}
+      });
+      lastAssistant.appendChild(copyIcon);
+    }
+
+    // Handle edits
     try {
       const payload = extractEditsFrom(txt);
       if (payload && Array.isArray(payload.changes) && payload.changes.length > 0) {
@@ -311,7 +425,7 @@ export default function App() {
   }
 
   function extractEditsFrom(text: string): any | null {
-    // Look for ```edits ...``` or ```json ...``` code fence containing an object with "changes"
+    
     const fences = text.match(/```(edits|json)\n([\s\S]*?)```/i);
     if (!fences) return null;
     const raw = fences[2];
@@ -351,7 +465,7 @@ export default function App() {
   }
 
   function switchThread(id: string) {
-    // Save current before switching
+    
     saveSnapshot();
     setCurrentId(id);
     const t = threads.find((x) => x.id === id);
@@ -362,7 +476,7 @@ export default function App() {
   }
 
   function newChat() {
-    // Save current, then create a new one and switch
+    
     saveSnapshot();
     const t = createNewThread();
     const next = [t, ...threads];
@@ -389,9 +503,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    // Persist when history visibility toggles
+    
     persistState(threads, currentId, historyOpen);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [historyOpen]);
 
   const styles = useMemo(() => ({
@@ -435,6 +549,10 @@ export default function App() {
           <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
         )}
         <button className="btn secondary" onClick={newChat}>New Chat</button>
+        <div className="mode-toggle">
+          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} onClick={() => toggleMode('read')}>Read</button>
+          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} onClick={() => toggleMode('agent')}>Agent</button>
+        </div>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
         </label>
@@ -453,6 +571,37 @@ export default function App() {
               </div>
             ))}
             {threads.length === 0 && <div className="history-empty">No conversations yet</div>}
+          </div>
+          
+          {/* Settings Section */}
+          <div className="settings-section">
+            <button className="settings-toggle" onClick={() => setShowSettings(!showSettings)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 1v6m0 6v6m5.66-9l-3 5.2m-3.46 0l-3-5.2m-1.29 8.66l5.2-3m0-3.46l-5.2-3m14.49 1.29l-5.2 3m0 3.46l5.2 3"/>
+              </svg>
+              Settings
+            </button>
+            {showSettings && (
+              <div className="settings-panel">
+                <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Connection Settings</h3>
+                <label className="setting-label">
+                  <span>Host</span>
+                  <input type="text" value={host} onChange={(e) => setHost(e.target.value)} placeholder="localhost" />
+                </label>
+                <label className="setting-label">
+                  <span>Port</span>
+                  <input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} placeholder="11434" />
+                </label>
+                <label className="setting-label">
+                  <span>API Key (Optional)</span>
+                  <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Optional API Key" />
+                </label>
+                <button className="send" onClick={saveSettings} disabled={savingSettings} style={{ width: '100%', marginTop: 8 }}>
+                  {savingSettings ? <><span className="spinner" /> Saving...</> : 'Save Settings'}
+                </button>
+              </div>
+            )}
           </div>
         </aside>
         <main className="chat">
@@ -502,7 +651,7 @@ export default function App() {
           className="prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ask anything about your codebase... (Shift+Enter for newline)"
+          placeholder="Ask anything... Type @filename to attach files (e.g., @src/app.ts)"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -530,7 +679,7 @@ function injectStyles() {
       background: #0e0e0e;
       display: flex;
       height: 100vh;
-      overflow: hidden; /* prevent page scroll; let content area handle it */
+      overflow: hidden; 
     }
 
     #root { width: 100%; display: flex; }
@@ -602,9 +751,14 @@ function injectStyles() {
       -moz-appearance: none;
     }
     .select-wrap::after {
-      content: '\u25BC'; /* down caret */
-      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-      font-size: 10px; opacity: .8; pointer-events: none;
+      content: '\u25BC'; 
+      position: absolute; 
+      right: 10px;
+      top: 50%; 
+      transform: translateY(-50%);
+      font-size: 10px; 
+      opacity: .8; 
+      pointer-events: none;
     }
 
     /* Layout */
@@ -680,7 +834,7 @@ function injectStyles() {
       display: flex;
       flex-direction: column;
       min-width: 0;
-      min-height: 0; /* allow children to size correctly */
+      min-height: 0; 
       height: 100%;
       background: rgba(18,18,18,0.7);
       backdrop-filter: blur(14px);
@@ -705,7 +859,7 @@ function injectStyles() {
     }
 
     .bubble {
-      display: inline-block; /* shrink to content instead of full width */
+      display: inline-block; 
       max-width: 90%;
       padding: 14px 16px;
       border-radius: 14px;
@@ -734,7 +888,7 @@ function injectStyles() {
       opacity: 0.7;
     }
 
-    /* Tighter inner spacing in assistant/user bubbles */
+    
     .bubble p { margin: 0 0 8px; }
     .bubble p:last-child { margin-bottom: 0; }
 
@@ -742,7 +896,7 @@ function injectStyles() {
 
     /* Composer */
     .composer {
-      /* composer stays fixed at bottom of panel; content scrolls */
+     
       position: sticky;
       bottom: 0;
       background: rgba(20,20,20,0.85);
@@ -874,7 +1028,401 @@ function injectStyles() {
       100% { margin-left: 100%; }
     }
 
-    /* Quick Actions removed from right panel per request */
+    /* Settings Panel */
+    .settings-section {
+      padding: 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .settings-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #e6e6e6;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .settings-toggle:hover {
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.15);
+    }
+
+    .settings-toggle svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+      transition: transform 0.2s ease;
+    }
+
+    .settings-panel {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease;
+      margin-top: 8px;
+    }
+
+    .settings-panel.show {
+      max-height: 400px;
+    }
+
+    .setting-label {
+      display: block;
+      color: #b3b3b3;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      margin-top: 12px;
+    }
+
+    .settings-panel input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #e6e6e6;
+      font-size: 13px;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .settings-panel input:focus {
+      outline: none;
+      background: rgba(255,255,255,0.08);
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.1);
+    }
+
+    .settings-panel button {
+      width: 100%;
+      margin-top: 16px;
+      padding: 10px;
+      background: linear-gradient(135deg, #1a73e8, #1559b3);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .settings-panel button:hover:not(:disabled) {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    .settings-panel button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Composer Actions & Mode Toggle */
+    .composer-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .mode-toggle {
+      display: flex;
+      gap: 6px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
+      padding: 4px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .mode-btn {
+      padding: 6px 14px;
+      background: transparent;
+      border: none;
+      color: #b3b3b3;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .mode-btn:hover {
+      background: rgba(255,255,255,0.06);
+      color: #e6e6e6;
+    }
+
+    .mode-btn.active {
+      background: linear-gradient(135deg, #1a73e8, #1559b3);
+      color: white;
+      box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+    }
+
+    /* Enhanced Code Blocks */
+    .code-block {
+      position: relative;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      margin: 12px 0;
+      overflow: hidden;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.2);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .code-lang {
+      font-size: 11px;
+      font-weight: 600;
+      color: #b3b3b3;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .copy-code-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 5px;
+      color: #e6e6e6;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .copy-code-btn:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    .copy-code-btn.copied {
+      background: rgba(69, 196, 107, 0.15);
+      border-color: rgba(69, 196, 107, 0.3);
+      color: #45c46b;
+    }
+
+    .copy-code-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    .code-block pre {
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #e6e6e6;
+    }
+
+    .code-block code {
+      display: block;
+      font-family: inherit;
+      white-space: pre;
+    }
+
+    /* Inline Code */
+    .inline-code {
+      display: inline;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 0.9em;
+      color: #f0f0f0;
+    }
+
+    /* Syntax Highlighting */
+    .language-javascript .keyword, .language-typescript .keyword, .language-js .keyword, .language-ts .keyword {
+      color: #c586c0;
+    }
+
+    .language-javascript .string, .language-typescript .string, .language-js .string, .language-ts .string {
+      color: #ce9178;
+    }
+
+    .language-javascript .function, .language-typescript .function, .language-js .function, .language-ts .function {
+      color: #dcdcaa;
+    }
+
+    .language-javascript .comment, .language-typescript .comment, .language-js .comment, .language-ts .comment {
+      color: #6a9955;
+      font-style: italic;
+    }
+
+    .language-python .keyword {
+      color: #569cd6;
+    }
+
+    .language-python .string {
+      color: #ce9178;
+    }
+
+    .language-python .function {
+      color: #dcdcaa;
+    }
+
+    .language-python .comment {
+      color: #6a9955;
+      font-style: italic;
+    }
+
+    .language-html .tag, .language-xml .tag {
+      color: #569cd6;
+    }
+
+    .language-html .attr-name, .language-xml .attr-name {
+      color: #9cdcfe;
+    }
+
+    .language-html .attr-value, .language-xml .attr-value {
+      color: #ce9178;
+    }
+
+    .language-css .property {
+      color: #9cdcfe;
+    }
+
+    .language-css .value {
+      color: #ce9178;
+    }
+
+    .language-css .selector {
+      color: #d7ba7d;
+    }
+
+    .language-json .property {
+      color: #9cdcfe;
+    }
+
+    .language-json .string {
+      color: #ce9178;
+    }
+
+    .language-json .number {
+      color: #b5cea8;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Improved Bubble Styling - Remove Card Appearance */
+    .bubble.assistant {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      margin: 16px 0;
+    }
+
+    .bubble.assistant p {
+      margin: 8px 0;
+      line-height: 1.6;
+      color: #e6e6e6;
+    }
+
+    .bubble.assistant h1,
+    .bubble.assistant h2,
+    .bubble.assistant h3,
+    .bubble.assistant h4 {
+      margin: 16px 0 8px 0;
+      font-weight: 600;
+      color: #f0f0f0;
+      line-height: 1.4;
+    }
+
+    .bubble.assistant h1 {
+      font-size: 1.8em;
+      border-bottom: 2px solid rgba(255,255,255,0.1);
+      padding-bottom: 8px;
+    }
+
+    .bubble.assistant h2 {
+      font-size: 1.5em;
+    }
+
+    .bubble.assistant h3 {
+      font-size: 1.3em;
+    }
+
+    .bubble.assistant ul,
+    .bubble.assistant ol {
+      margin: 8px 0;
+      padding-left: 24px;
+      line-height: 1.8;
+    }
+
+    .bubble.assistant li {
+      margin: 4px 0;
+      color: #e6e6e6;
+    }
+
+    .bubble.assistant strong {
+      font-weight: 600;
+      color: #f0f0f0;
+    }
+
+    .bubble.assistant em {
+      font-style: italic;
+      color: #d0d0d0;
+    }
+
+    .bubble.assistant blockquote {
+      margin: 12px 0;
+      padding: 8px 16px;
+      border-left: 4px solid rgba(26, 115, 232, 0.5);
+      background: rgba(26, 115, 232, 0.05);
+      color: #d0d0d0;
+      font-style: italic;
+    }
+
+    .bubble.assistant a {
+      color: #1a73e8;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(26, 115, 232, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .bubble.assistant a:hover {
+      border-bottom-color: #1a73e8;
+    }
   `;
   const el = document.createElement('style');
   el.textContent = css;
