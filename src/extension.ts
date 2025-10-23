@@ -13,7 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   const client = new OllamaClient(host, port, systemPrompt);
 
-  chatProvider = new OllamaChatViewProvider(context.extensionUri, client);
+  chatProvider = new OllamaChatViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(OllamaChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -25,7 +25,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('ollamaAgent.chat', async () => {
-      chatPanel.show(vscode.ViewColumn.Beside);
+      if (chatPanel.isVisible()) {
+        chatPanel.close();
+      } else {
+        chatPanel.show(vscode.ViewColumn.Beside);
+      }
     })
   );
 
@@ -58,9 +62,8 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       const selection = editor.document.getText(editor.selection) || editor.document.getText();
-      chatProvider?.prefill(`Please help with this code:\n\n${selection}`);
-      await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
-      chatProvider?.reveal();
+      chatPanel.prefill(`Please help with this code:\n\n${selection}`);
+      chatPanel.show(vscode.ViewColumn.Beside);
     })
   );
 

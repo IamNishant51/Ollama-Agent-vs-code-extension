@@ -46,14 +46,19 @@ function activate(context) {
     const port = config.get('port', 11434);
     const systemPrompt = config.get('systemPrompt', 'You are a helpful coding assistant.');
     const client = new ollamaClient_js_1.OllamaClient(host, port, systemPrompt);
-    chatProvider = new chatView_js_1.OllamaChatViewProvider(context.extensionUri, client);
+    chatProvider = new chatView_js_1.OllamaChatViewProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(chatView_js_1.OllamaChatViewProvider.viewType, chatProvider, {
         webviewOptions: { retainContextWhenHidden: true }
     }));
     const chatPanel = new chatPanel_1.OllamaChatPanel(context.extensionUri, client);
     // Commands
     context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.chat', async () => {
-        chatPanel.show(vscode.ViewColumn.Beside);
+        if (chatPanel.isVisible()) {
+            chatPanel.close();
+        }
+        else {
+            chatPanel.show(vscode.ViewColumn.Beside);
+        }
     }));
     // Status bar shortcut to open the chat panel on the right
     const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
@@ -81,9 +86,8 @@ function activate(context) {
             return;
         }
         const selection = editor.document.getText(editor.selection) || editor.document.getText();
-        chatProvider?.prefill(`Please help with this code:\n\n${selection}`);
-        await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
-        chatProvider?.reveal();
+        chatPanel.prefill(`Please help with this code:\n\n${selection}`);
+        chatPanel.show(vscode.ViewColumn.Beside);
     }));
     context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.generateCode', async () => {
         const prompt = await vscode.window.showInputBox({ placeHolder: 'Describe the code to generate' });

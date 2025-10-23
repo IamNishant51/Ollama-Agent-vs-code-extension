@@ -3,12 +3,17 @@ import { OllamaClient, OllamaMessage } from './ollamaClient.js';
 
 export class OllamaChatPanel {
   private panel: vscode.WebviewPanel | undefined;
+  private pendingPrefill: string | undefined;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly client: OllamaClient) {}
 
   show(column: vscode.ViewColumn = vscode.ViewColumn.Beside) {
     if (this.panel) {
       this.panel.reveal(column, true);
+      if (this.pendingPrefill) {
+        this.panel.webview.postMessage({ type: 'prefill', text: this.pendingPrefill });
+        this.pendingPrefill = undefined;
+      }
       return;
     }
     this.panel = vscode.window.createWebviewPanel(
@@ -23,6 +28,10 @@ export class OllamaChatPanel {
 
     this.panel.onDidDispose(() => (this.panel = undefined));
     this.panel.webview.html = this.getHtml(this.panel.webview);
+    if (this.pendingPrefill) {
+      this.panel.webview.postMessage({ type: 'prefill', text: this.pendingPrefill });
+      this.pendingPrefill = undefined;
+    }
 
     this.panel.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
@@ -85,8 +94,18 @@ export class OllamaChatPanel {
     });
   }
 
+  prefill(text: string) {
+    if (this.panel) {
+      this.panel.webview.postMessage({ type: 'prefill', text });
+    } else {
+      this.pendingPrefill = text;
+    }
+  }
+
   private getHtml(webview: vscode.Webview) {
     const nonce = getNonce();
+  const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview.js'));
+  const cacheBust = String(Date.now());
     const styles = `
       :root { color-scheme: dark; }
       body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-editor-background); display:flex; height:100vh; }
@@ -121,120 +140,18 @@ export class OllamaChatPanel {
 <style>${styles}</style>
 </head>
 <body>
-  <div class="panel">
-    <div class="toolbar">
-      <span class="title">Ollama</span>
-      <select id="models" class="select" multiple size="1" aria-label="Models"></select>
-      <span id="status" class="tag">Ready</span>
-      <span class="spacer"></span>
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="useChat" checked /> Chat API
-      </label>
-    </div>
-    <div id="content" class="content" aria-live="polite"></div>
-    <div class="composer">
-      <textarea id="prompt" class="prompt" placeholder="Ask anything about your codebase..."></textarea>
-      <button id="send" class="send">Send</button>
-    </div>
-  </div>
-
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const modelsEl = document.getElementById('models');
-    const promptEl = document.getElementById('prompt');
-    const contentEl = document.getElementById('content');
-    const sendBtn = document.getElementById('send');
-    const useChatEl = document.getElementById('useChat');
-    const statusEl = document.getElementById('status');
-
-    vscode.postMessage({ type: 'requestModels' });
-
-    function addMessage(role, text, model) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'msg';
-      if (model) {
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = model;
-        wrapper.appendChild(meta);
-      }
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant');
-      wrapper.appendChild(bubble);
-      if (role !== 'user') {
-        const actions = document.createElement('div');
-        actions.style.display = 'flex';
-        actions.style.gap = '6px';
-        actions.style.marginTop = '4px';
-
-        const insertBtn = document.createElement('button');
-        insertBtn.textContent = 'Insert at Cursor';
-        insertBtn.className = 'send';
-        insertBtn.addEventListener('click', () => {
-          vscode.postMessage({ type: 'insertText', text: bubble.textContent || '' });
-        });
-
-        const copyBtn = document.createElement('button');
-        copyBtn.textContent = 'Copy';
-        copyBtn.className = 'send';
-        copyBtn.addEventListener('click', async () => {
-          try { await navigator.clipboard.writeText(bubble.textContent || ''); } catch {}
-        });
-
-        actions.appendChild(insertBtn);
-        actions.appendChild(copyBtn);
-        wrapper.appendChild(actions);
-      }
-      contentEl.appendChild(wrapper);
-      contentEl.scrollTop = contentEl.scrollHeight;
-      return bubble;
-    }
-
-    let lastAssistant;
-
-    window.addEventListener('message', (event) => {
-      const msg = event.data;
-      if (msg.type === 'models') {
-        modelsEl.innerHTML = '';
-        (msg.models || []).forEach((m) => {
-          const opt = document.createElement('option');
-          opt.value = m; opt.textContent = m; modelsEl.appendChild(opt);
-        });
-      }
-      if (msg.type === 'prefill') {
-        promptEl.value = msg.text || '';
-      }
-      if (msg.type === 'chatStart') {
-        statusEl.textContent = 'Streaming';
-        lastAssistant = addMessage('assistant', '', msg.model);
-      }
-      if (msg.type === 'chatChunk') {
-        lastAssistant.textContent += msg.text;
-        contentEl.scrollTop = contentEl.scrollHeight;
-      }
-      if (msg.type === 'chatDone') {
-        statusEl.textContent = 'Ready';
-      }
-      if (msg.type === 'error' || msg.type === 'chatError') {
-        statusEl.textContent = 'Error';
-        const err = addMessage('assistant', 'Error: ' + msg.message);
-        err.style.color = 'var(--vscode-editorError-foreground)';
-      }
-    });
-
-    sendBtn.addEventListener('click', () => {
-      const selected = Array.from(modelsEl.selectedOptions).map(o => o.value);
-      const prompt = promptEl.value.trim();
-      if (!selected.length || !prompt) {
-        return;
-      }
-      addMessage('user', prompt);
-      promptEl.value = '';
-      vscode.postMessage({ type: 'startChat', models: selected, prompt, useChat: useChatEl.checked });
-    });
-  </script>
+  <div id="root"></div>
+  <script nonce="${nonce}" src="${scriptUri}?v=${cacheBust}"></script>
 </body>
 </html>`;
+  }
+
+  isVisible(): boolean {
+    return !!this.panel && this.panel.visible === true;
+  }
+
+  close(): void {
+    this.panel?.dispose();
   }
 }
 

@@ -10,7 +10,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
@@ -30,24 +32,60 @@
           "type": "string",
           "default": "You are a helpful coding assistant.",
           "description": "System prompt for the assistant"
+        },
+        "ollamaAgent.provider": {
+          "type": "string",
+          "enum": ["ollama", "openai", "anthropic", "other"],
+          "default": "ollama",
+          "description": "Default AI provider to use in the chat panel"
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollamaAgent",
+          "title": "Ollama",
+          "icon": "media/ollama.svg"
+        }
+      ]
+    },
+    "views": {
+      "ollamaAgent": [
+        {
+          "type": "webview",
+          "id": "ollamaAgent.chatView",
+          "name": "Chat",
+          "icon": "media/ollama.svg"
+        }
+      ]
     },
     "commands": [
       {
         "command": "ollamaAgent.chat",
-        "title": "Ollama Agent: Open Chat"
+        "title": "Ollama Agent: Open Chat",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "ollamaAgent.askSelection",
-        "title": "Ollama Agent: Ask About Selection"
+        "title": "Ollama Agent: Ask About Selection",
+        "icon": "$(question)"
       },
       {
         "command": "ollamaAgent.generateCode",
-        "title": "Ollama Agent: Generate Code Here"
+        "title": "Ollama Agent: Generate Code Here",
+        "icon": "$(code)"
       }
     ],
-    "menus": {
+  "menus": {
+      "commandPalette": [
+        { "command": "ollamaAgent.chat", "when": "true" },
+        { "command": "ollamaAgent.askSelection", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.generateCode", "when": "editorTextFocus" }
+      ],
+      "commandCenter": [
+        { "command": "ollamaAgent.chat", "group": "navigation@10" }
+      ],
       "editor/context": [
         {
           "command": "ollamaAgent.askSelection",
@@ -57,11 +95,16 @@
           "command": "ollamaAgent.generateCode",
           "group": "navigation@100"
         }
+      ],
+      "editor/title": [
+        { "command": "ollamaAgent.chat", "when": "true", "group": "navigation@10" }
       ]
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:webview && npm run compile",
+    "build:webview": "node ./scripts/build-webview.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
@@ -77,9 +120,13 @@
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.32.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "esbuild": "^0.23.1",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1"
   },
   "dependencies": {
-    
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

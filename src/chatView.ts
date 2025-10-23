@@ -1,85 +1,84 @@
 import * as vscode from 'vscode';
-import { OllamaClient, OllamaMessage } from './ollamaClient';
 
 export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'ollamaAgent.chatView';
 
   private _view?: vscode.WebviewView;
+  private _autoOpenedPanel = false;
 
-  constructor(private readonly _extensionUri: vscode.Uri, private readonly client: OllamaClient) {}
+  constructor(private readonly _context: vscode.ExtensionContext) {}
 
   reveal() {
     this._view?.show?.(true);
   }
 
-  prefill(text: string) {
-    this._view?.webview.postMessage({ type: 'prefill', text });
-  }
-
   resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {
     this._view = webviewView;
-    const webview = webviewView.webview;
-    webview.options = {
-      enableScripts: true
-    };
+  const webview = webviewView.webview;
+    webview.options = { enableScripts: true };
 
-    webview.html = this.getHtmlForWebview(webview);
+  webview.html = this.getHtmlForWebview(webview);
+
+    // Open the right-side chat panel once when this launcher view first resolves.
+    if (!this._autoOpenedPanel) {
+      this._autoOpenedPanel = true;
+      setTimeout(() => vscode.commands.executeCommand('ollamaAgent.chat'), 50);
+    }
 
     webview.onDidReceiveMessage(async (msg) => {
-      switch (msg.type) {
-        case 'requestModels': {
-          try {
-            const models = await this.client.listModels();
-            webview.postMessage({ type: 'models', models });
-          } catch (e: any) {
-            webview.postMessage({ type: 'error', message: String(e?.message || e) });
-          }
+      switch (msg?.type) {
+        case 'openChatPanel':
+          vscode.commands.executeCommand('ollamaAgent.chat');
+          break;
+        case 'requestSettings': {
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const systemPrompt = cfg.get<string>('systemPrompt', 'You are a helpful coding assistant.');
+          const provider = cfg.get<string>('provider', 'ollama');
+          const hasOpenAIKey = !!(await this._context.secrets.get('ollamaAgent.openaiKey'));
+          const hasAnthropicKey = !!(await this._context.secrets.get('ollamaAgent.anthropicKey'));
+          const hasOtherKey = !!(await this._context.secrets.get('ollamaAgent.otherKey'));
+          const hasProviderKey = provider === 'openai' ? hasOpenAIKey : provider === 'anthropic' ? hasAnthropicKey : provider === 'other' ? hasOtherKey : true;
+          webview.postMessage({ type: 'settings', systemPrompt, provider, hasProviderKey });
           break;
         }
-        case 'startChat': {
-          const models: string[] = msg.models || [];
-          const prompt: string = msg.prompt || '';
-          const useChat: boolean = !!msg.useChat;
-          if (!models.length || !prompt) {
-            return;
+        case 'saveSecret': {
+          const { which, value } = msg; // which: 'openai' | 'anthropic'
+          if (which === 'openai') {
+            await this._context.secrets.store('ollamaAgent.openaiKey', value || '');
           }
-          for (const m of models) {
-            webview.postMessage({ type: 'chatStart', model: m });
-            try {
-              const onToken = (t: string) => webview.postMessage({ type: 'chatChunk', model: m, text: t });
-              if (useChat) {
-                const messages: OllamaMessage[] = [{ role: 'user', content: prompt }];
-                await this.client.chat(m, messages, true, onToken);
-              } else {
-                await this.client.generate(m, prompt, true, onToken);
-              }
-              webview.postMessage({ type: 'chatDone', model: m });
-            } catch (e: any) {
-              webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
-            }
+          if (which === 'anthropic') {
+            await this._context.secrets.store('ollamaAgent.anthropicKey', value || '');
           }
+          if (which === 'other') {
+            await this._context.secrets.store('ollamaAgent.otherKey', value || '');
+          }
+          webview.postMessage({ type: 'saved', what: 'secret', which });
           break;
         }
-        case 'insertText': {
-          const text: string = msg.text || '';
-          const editor = vscode.window.activeTextEditor;
-          if (editor && text) {
-            await editor.edit((ed) => ed.insert(editor.selection.active, text));
+        case 'deleteSecret': {
+          const { which } = msg;
+          if (which === 'openai') {
+            await this._context.secrets.delete('ollamaAgent.openaiKey');
           }
+          if (which === 'anthropic') {
+            await this._context.secrets.delete('ollamaAgent.anthropicKey');
+          }
+          if (which === 'other') {
+            await this._context.secrets.delete('ollamaAgent.otherKey');
+          }
+          webview.postMessage({ type: 'deleted', what: 'secret', which });
           break;
         }
-        case 'applyEdits': {
-          await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', msg.payload);
-          break;
-        }
-        case 'openFile': {
-          try {
-            const uri = vscode.Uri.parse(msg.uri);
-            const doc = await vscode.workspace.openTextDocument(uri);
-            await vscode.window.showTextDocument(doc, { preview: false });
-          } catch (e) {
-            vscode.window.showErrorMessage('Failed to open file');
+        case 'saveConfig': {
+          const { provider, systemPrompt } = msg;
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          if (provider) {
+            await cfg.update('provider', provider, vscode.ConfigurationTarget.Global);
           }
+          if (typeof systemPrompt === 'string') {
+            await cfg.update('systemPrompt', systemPrompt, vscode.ConfigurationTarget.Global);
+          }
+          webview.postMessage({ type: 'saved', what: 'config' });
           break;
         }
       }
@@ -90,151 +89,109 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     const nonce = getNonce();
     const styles = `
       :root { color-scheme: dark; }
-      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); height:100vh; display:flex; }
-      .panel { display:flex; flex-direction:column; width:100%; }
-      .toolbar { display:flex; gap:8px; align-items:center; padding:8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); position:sticky; top:0; z-index:2; }
-      .title { font-weight:600; }
-      .select { min-width: 220px; }
-      .content { flex:1; overflow:auto; padding: 12px; display:flex; flex-direction:column; gap:12px; }
-      .composer { display:flex; gap:8px; padding:8px; border-top:1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
-      .prompt { flex:1; min-height: 64px; resize: vertical; width:100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
-      .send { width:auto; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius:4px; padding:6px 10px; cursor: pointer; }
-      .send:hover { background: var(--vscode-button-hoverBackground); }
-      select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
-
-      .bubble { max-width: 90%; padding:10px 12px; border-radius:10px; line-height:1.4; white-space:pre-wrap; }
-      .assistant { background: color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent); border: 1px solid var(--vscode-input-border); align-self:flex-start; }
-      .user { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); align-self:flex-end; }
-      .meta { font-size: 11px; opacity: .8; margin-bottom: 4px; }
-      .msg { display:flex; flex-direction:column; gap:4px; }
-      .tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 999px; padding: 2px 8px; font-size: 11px; }
-      .spacer { flex:1; }
+      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); height:100%; }
+      .wrap { padding: 16px; display:flex; flex-direction:column; gap: 12px; }
+      .title { font-weight:600; font-size: 13px; }
+      .hint { opacity: .8; font-size: 12px; }
+      .section { border: 1px solid var(--vscode-panel-border); background: color-mix(in srgb, var(--vscode-sideBar-background) 85%, var(--vscode-editor-foreground) 5%); border-radius:8px; padding: 12px; display:flex; flex-direction:column; gap:8px; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
+      .label { width: 120px; font-size: 12px; opacity: .9; }
+      input[type=text], input[type=password], select, textarea { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
+      textarea { min-height: 80px; resize: vertical; }
+      .btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+      .btn:hover { background: var(--vscode-button-hoverBackground); }
+      .subtle { opacity: .7; font-size: 12px; }
+      @media (max-width: 700px) { .label { width: 100%; } }
     `;
-
-    const html = `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ollama Agent</title>
-<style>${styles}</style>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ollama Agent</title>
+  <style>${styles}</style>
 </head>
 <body>
-  <div class="panel">
-    <div class="toolbar">
-      <span class="title">Ollama</span>
-      <select id="models" class="select" multiple size="1" aria-label="Models"></select>
-      <span id="status" class="tag">Ready</span>
-      <span class="spacer"></span>
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="useChat" checked /> Chat API
-      </label>
+  <div class="wrap">
+    <div class="title">Ollama</div>
+    <div class="hint">Open the chat on the right, and manage keys and settings here.</div>
+
+    <div class="section">
+      <div class="row"><span class="label">Open Chat</span><button class="btn" id="open">Open</button></div>
     </div>
-    <div id="chat" class="content" aria-live="polite"></div>
-    <div class="composer">
-      <textarea id="prompt" class="prompt" placeholder="Ask anything about your codebase..."></textarea>
-      <button id="send" class="send">Send</button>
+
+    <div class="section">
+      <div class="row">
+        <span class="label">Provider</span>
+        <select id="provider">
+          <option value="ollama">Ollama (local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="label">API Key</span>
+        <input id="apiKey" type="password" placeholder="Paste API key here" />
+        <button class="btn" id="saveKey">Save</button>
+        <button class="btn" id="delKey">Remove</button>
+      </div>
+      <div class="subtle" id="keysState"></div>
+    </div>
+
+    <div class="section">
+      <div class="row"><span class="label">System Prompt</span></div>
+      <textarea id="systemPrompt" placeholder="You are a helpful coding assistant."></textarea>
+      <div class="row"><span class="spacer"></span><button class="btn" id="saveConfig">Save Settings</button></div>
     </div>
   </div>
-
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-  const modelsEl = document.getElementById('models');
-  const promptEl = document.getElementById('prompt');
-  const chatEl = document.getElementById('chat');
-  const sendBtn = document.getElementById('send');
-  const useChatEl = document.getElementById('useChat');
-  const statusEl = document.getElementById('status');
+    document.getElementById('open')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'openChatPanel' });
+    });
 
-    vscode.postMessage({ type: 'requestModels' });
+    function refreshState(s) {
+      if (!s) return;
+      if (s.provider) document.getElementById('provider').value = s.provider;
+      if (typeof s.systemPrompt === 'string') document.getElementById('systemPrompt').value = s.systemPrompt;
+      document.getElementById('apiKey').disabled = (s.provider === 'ollama');
+      document.getElementById('saveKey').disabled = (s.provider === 'ollama');
+      document.getElementById('delKey').disabled = (s.provider === 'ollama');
+      document.getElementById('keysState').textContent =
+        (s.provider === 'ollama') ? 'No API key required for Ollama (local).' :
+        ('Key status: ' + (s.hasProviderKey ? 'Saved' : 'Not set'));
+    }
 
-    window.addEventListener('message', (event) => {
-      const msg = event.data;
-      if (msg.type === 'prefill') {
-        promptEl.value = msg.text || '';
-      }
-      if (msg.type === 'models') {
-        modelsEl.innerHTML = '';
-        (msg.models || []).forEach((m) => {
-          const opt = document.createElement('option');
-          opt.value = m; opt.textContent = m; modelsEl.appendChild(opt);
-        });
-      }
-      let lastAssistant;
-      if (msg.type === 'chatStart') {
-        statusEl.textContent = 'Streaming';
-        const wrap = document.createElement('div');
-        wrap.className = 'msg';
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = msg.model;
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble assistant';
-        wrap.appendChild(meta);
-        wrap.appendChild(bubble);
-        chatEl.appendChild(wrap);
-        lastAssistant = bubble;
-      }
-      if (msg.type === 'chatChunk') {
-        if (!lastAssistant) {
-          const bubble = document.createElement('div');
-          bubble.className = 'bubble assistant';
-          chatEl.appendChild(bubble);
-          lastAssistant = bubble;
-        }
-        lastAssistant.textContent += msg.text;
-        chatEl.scrollTop = chatEl.scrollHeight;
-      }
-      if (msg.type === 'chatDone') {
-        statusEl.textContent = 'Ready';
-      }
-      if (msg.type === 'error' || msg.type === 'chatError') {
-        statusEl.textContent = 'Error';
-        const errWrap = document.createElement('div');
-        errWrap.className = 'msg';
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble assistant';
-        bubble.style.color = 'var(--vscode-editorError-foreground)';
-        bubble.textContent = 'Error: ' + msg.message;
-        errWrap.appendChild(bubble);
-        chatEl.appendChild(errWrap);
+    document.getElementById('saveKey')?.addEventListener('click', () => {
+      const provider = (document.getElementById('provider') || {}).value;
+      const v = (document.getElementById('apiKey') || {}).value || '';
+      vscode.postMessage({ type: 'saveSecret', which: provider, value: v });
+    });
+    document.getElementById('delKey')?.addEventListener('click', () => {
+      const provider = (document.getElementById('provider') || {}).value;
+      vscode.postMessage({ type: 'deleteSecret', which: provider });
+    });
+
+    document.getElementById('saveConfig')?.addEventListener('click', () => {
+      const provider = (document.getElementById('provider') || {}).value;
+      const systemPrompt = (document.getElementById('systemPrompt') || {}).value;
+      vscode.postMessage({ type: 'saveConfig', provider, systemPrompt });
+    });
+
+    window.addEventListener('message', (ev) => {
+      const msg = ev.data || {};
+      if (msg.type === 'settings') refreshState(msg);
+      if (msg.type === 'saved' || msg.type === 'deleted') {
+        vscode.postMessage({ type: 'requestSettings' });
       }
     });
 
-    function addUserMessage(text) {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg';
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble user';
-      bubble.textContent = text;
-      wrap.appendChild(bubble);
-      chatEl.appendChild(wrap);
-      chatEl.scrollTop = chatEl.scrollHeight;
-    }
-
-    function send() {
-      const selected = Array.from(modelsEl.selectedOptions).map(o => o.value);
-      const prompt = promptEl.value.trim();
-      if (!selected.length || !prompt) {
-        return;
-      }
-      addUserMessage(prompt);
-      promptEl.value = '';
-      vscode.postMessage({ type: 'startChat', models: selected, prompt, useChat: useChatEl.checked });
-    }
-
-    sendBtn.addEventListener('click', send);
-    promptEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        send();
-      }
-    });
+    vscode.postMessage({ type: 'requestSettings' });
   </script>
 </body>
 </html>`;
-    return html;
   }
 }
 
