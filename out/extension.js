@@ -38,6 +38,7 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const ollamaClient_js_1 = require("./ollamaClient.js");
 const chatView_js_1 = require("./chatView.js");
+const chatPanel_1 = require("./chatPanel");
 let chatProvider;
 function activate(context) {
     const config = vscode.workspace.getConfiguration('ollamaAgent');
@@ -49,11 +50,30 @@ function activate(context) {
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(chatView_js_1.OllamaChatViewProvider.viewType, chatProvider, {
         webviewOptions: { retainContextWhenHidden: true }
     }));
+    const chatPanel = new chatPanel_1.OllamaChatPanel(context.extensionUri, client);
     // Commands
     context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.chat', async () => {
-        await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
-        chatProvider?.reveal();
+        chatPanel.show(vscode.ViewColumn.Beside);
     }));
+    // Status bar shortcut to open the chat panel on the right
+    const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
+    item.text = '$(comment-discussion) Ollama';
+    item.tooltip = 'Open Ollama Chat';
+    item.command = 'ollamaAgent.chat';
+    item.show();
+    context.subscriptions.push(item);
+    // Optional: show a one-time welcome tip to open chat
+    const shown = context.globalState.get('ollamaAgent.welcomeShown');
+    if (!shown) {
+        vscode.window
+            .showInformationMessage('Ollama Agent is ready. Open the chat on the right?', 'Open Chat')
+            .then((choice) => {
+            if (choice === 'Open Chat') {
+                vscode.commands.executeCommand('ollamaAgent.chat');
+            }
+        });
+        context.globalState.update('ollamaAgent.welcomeShown', true);
+    }
     context.subscriptions.push(vscode.commands.registerCommand('ollamaAgent.askSelection', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {

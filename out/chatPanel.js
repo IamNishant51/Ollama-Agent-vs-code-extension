@@ -33,39 +33,36 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OllamaChatViewProvider = void 0;
+exports.OllamaChatPanel = void 0;
 const vscode = __importStar(require("vscode"));
-class OllamaChatViewProvider {
-    _extensionUri;
+class OllamaChatPanel {
+    extensionUri;
     client;
-    static viewType = 'ollamaAgent.chatView';
-    _view;
-    constructor(_extensionUri, client) {
-        this._extensionUri = _extensionUri;
+    panel;
+    constructor(extensionUri, client) {
+        this.extensionUri = extensionUri;
         this.client = client;
     }
-    reveal() {
-        this._view?.show?.(true);
-    }
-    prefill(text) {
-        this._view?.webview.postMessage({ type: 'prefill', text });
-    }
-    resolveWebviewView(webviewView) {
-        this._view = webviewView;
-        const webview = webviewView.webview;
-        webview.options = {
-            enableScripts: true
-        };
-        webview.html = this.getHtmlForWebview(webview);
-        webview.onDidReceiveMessage(async (msg) => {
+    show(column = vscode.ViewColumn.Beside) {
+        if (this.panel) {
+            this.panel.reveal(column, true);
+            return;
+        }
+        this.panel = vscode.window.createWebviewPanel('ollamaAgent.chatPanel', 'Ollama Chat', { viewColumn: column, preserveFocus: true }, {
+            enableScripts: true,
+            retainContextWhenHidden: true
+        });
+        this.panel.onDidDispose(() => (this.panel = undefined));
+        this.panel.webview.html = this.getHtml(this.panel.webview);
+        this.panel.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
                 case 'requestModels': {
                     try {
                         const models = await this.client.listModels();
-                        webview.postMessage({ type: 'models', models });
+                        this.panel?.webview.postMessage({ type: 'models', models });
                     }
                     catch (e) {
-                        webview.postMessage({ type: 'error', message: String(e?.message || e) });
+                        this.panel?.webview.postMessage({ type: 'error', message: String(e?.message || e) });
                     }
                     break;
                 }
@@ -77,9 +74,9 @@ class OllamaChatViewProvider {
                         return;
                     }
                     for (const m of models) {
-                        webview.postMessage({ type: 'chatStart', model: m });
+                        this.panel?.webview.postMessage({ type: 'chatStart', model: m });
                         try {
-                            const onToken = (t) => webview.postMessage({ type: 'chatChunk', model: m, text: t });
+                            const onToken = (t) => this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: t });
                             if (useChat) {
                                 const messages = [{ role: 'user', content: prompt }];
                                 await this.client.chat(m, messages, true, onToken);
@@ -87,10 +84,10 @@ class OllamaChatViewProvider {
                             else {
                                 await this.client.generate(m, prompt, true, onToken);
                             }
-                            webview.postMessage({ type: 'chatDone', model: m });
+                            this.panel?.webview.postMessage({ type: 'chatDone', model: m });
                         }
                         catch (e) {
-                            webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
+                            this.panel?.webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
                         }
                     }
                     break;
@@ -121,37 +118,38 @@ class OllamaChatViewProvider {
             }
         });
     }
-    getHtmlForWebview(webview) {
+    getHtml(webview) {
         const nonce = getNonce();
         const styles = `
       :root { color-scheme: dark; }
-      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); height:100vh; display:flex; }
+      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-editor-background); display:flex; height:100vh; }
       .panel { display:flex; flex-direction:column; width:100%; }
-      .toolbar { display:flex; gap:8px; align-items:center; padding:8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); position:sticky; top:0; z-index:2; }
-      .title { font-weight:600; }
+      .toolbar { display:flex; gap:8px; align-items:center; padding:8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); position:sticky; top:0; z-index:2; }
+      .toolbar .title { font-weight:600; }
       .select { min-width: 220px; }
       .content { flex:1; overflow:auto; padding: 12px; display:flex; flex-direction:column; gap:12px; }
-      .composer { display:flex; gap:8px; padding:8px; border-top:1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
-      .prompt { flex:1; min-height: 64px; resize: vertical; width:100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
-      .send { width:auto; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius:4px; padding:6px 10px; cursor: pointer; }
-      .send:hover { background: var(--vscode-button-hoverBackground); }
-      select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
+      .composer { display:flex; gap:8px; padding:8px; border-top:1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); }
+      .prompt { flex:1; min-height: 64px; resize: vertical; }
+      .send { width:auto; }
 
+      /* Chat bubbles */
       .bubble { max-width: 90%; padding:10px 12px; border-radius:10px; line-height:1.4; white-space:pre-wrap; }
       .assistant { background: color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent); border: 1px solid var(--vscode-input-border); align-self:flex-start; }
       .user { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); align-self:flex-end; }
       .meta { font-size: 11px; opacity: .8; margin-bottom: 4px; }
       .msg { display:flex; flex-direction:column; gap:4px; }
+      .code { background: var(--vscode-editor-background); border: 1px solid var(--vscode-input-border); border-radius:6px; padding:8px; font-family: var(--vscode-editor-font-family); overflow:auto; }
+
       .tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 999px; padding: 2px 8px; font-size: 11px; }
       .spacer { flex:1; }
     `;
-        const html = `<!DOCTYPE html>
-<html lang="en">
+        return `<!DOCTYPE html>
+<html>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ollama Agent</title>
+<title>Ollama Chat</title>
 <style>${styles}</style>
 </head>
 <body>
@@ -165,7 +163,7 @@ class OllamaChatViewProvider {
         <input type="checkbox" id="useChat" checked /> Chat API
       </label>
     </div>
-    <div id="chat" class="content" aria-live="polite"></div>
+    <div id="content" class="content" aria-live="polite"></div>
     <div class="composer">
       <textarea id="prompt" class="prompt" placeholder="Ask anything about your codebase..."></textarea>
       <button id="send" class="send">Send</button>
@@ -174,20 +172,60 @@ class OllamaChatViewProvider {
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-  const modelsEl = document.getElementById('models');
-  const promptEl = document.getElementById('prompt');
-  const chatEl = document.getElementById('chat');
-  const sendBtn = document.getElementById('send');
-  const useChatEl = document.getElementById('useChat');
-  const statusEl = document.getElementById('status');
+    const modelsEl = document.getElementById('models');
+    const promptEl = document.getElementById('prompt');
+    const contentEl = document.getElementById('content');
+    const sendBtn = document.getElementById('send');
+    const useChatEl = document.getElementById('useChat');
+    const statusEl = document.getElementById('status');
 
     vscode.postMessage({ type: 'requestModels' });
 
+    function addMessage(role, text, model) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg';
+      if (model) {
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = model;
+        wrapper.appendChild(meta);
+      }
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant');
+      wrapper.appendChild(bubble);
+      if (role !== 'user') {
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.gap = '6px';
+        actions.style.marginTop = '4px';
+
+        const insertBtn = document.createElement('button');
+        insertBtn.textContent = 'Insert at Cursor';
+        insertBtn.className = 'send';
+        insertBtn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'insertText', text: bubble.textContent || '' });
+        });
+
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = 'Copy';
+        copyBtn.className = 'send';
+        copyBtn.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(bubble.textContent || ''); } catch {}
+        });
+
+        actions.appendChild(insertBtn);
+        actions.appendChild(copyBtn);
+        wrapper.appendChild(actions);
+      }
+      contentEl.appendChild(wrapper);
+      contentEl.scrollTop = contentEl.scrollHeight;
+      return bubble;
+    }
+
+    let lastAssistant;
+
     window.addEventListener('message', (event) => {
       const msg = event.data;
-      if (msg.type === 'prefill') {
-        promptEl.value = msg.text || '';
-      }
       if (msg.type === 'models') {
         modelsEl.innerHTML = '';
         (msg.models || []).forEach((m) => {
@@ -195,83 +233,43 @@ class OllamaChatViewProvider {
           opt.value = m; opt.textContent = m; modelsEl.appendChild(opt);
         });
       }
-      let lastAssistant;
+      if (msg.type === 'prefill') {
+        promptEl.value = msg.text || '';
+      }
       if (msg.type === 'chatStart') {
         statusEl.textContent = 'Streaming';
-        const wrap = document.createElement('div');
-        wrap.className = 'msg';
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = msg.model;
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble assistant';
-        wrap.appendChild(meta);
-        wrap.appendChild(bubble);
-        chatEl.appendChild(wrap);
-        lastAssistant = bubble;
+        lastAssistant = addMessage('assistant', '', msg.model);
       }
       if (msg.type === 'chatChunk') {
-        if (!lastAssistant) {
-          const bubble = document.createElement('div');
-          bubble.className = 'bubble assistant';
-          chatEl.appendChild(bubble);
-          lastAssistant = bubble;
-        }
         lastAssistant.textContent += msg.text;
-        chatEl.scrollTop = chatEl.scrollHeight;
+        contentEl.scrollTop = contentEl.scrollHeight;
       }
       if (msg.type === 'chatDone') {
         statusEl.textContent = 'Ready';
       }
       if (msg.type === 'error' || msg.type === 'chatError') {
         statusEl.textContent = 'Error';
-        const errWrap = document.createElement('div');
-        errWrap.className = 'msg';
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble assistant';
-        bubble.style.color = 'var(--vscode-editorError-foreground)';
-        bubble.textContent = 'Error: ' + msg.message;
-        errWrap.appendChild(bubble);
-        chatEl.appendChild(errWrap);
+        const err = addMessage('assistant', 'Error: ' + msg.message);
+        err.style.color = 'var(--vscode-editorError-foreground)';
       }
     });
 
-    function addUserMessage(text) {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg';
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble user';
-      bubble.textContent = text;
-      wrap.appendChild(bubble);
-      chatEl.appendChild(wrap);
-      chatEl.scrollTop = chatEl.scrollHeight;
-    }
-
-    function send() {
+    sendBtn.addEventListener('click', () => {
       const selected = Array.from(modelsEl.selectedOptions).map(o => o.value);
       const prompt = promptEl.value.trim();
       if (!selected.length || !prompt) {
         return;
       }
-      addUserMessage(prompt);
+      addMessage('user', prompt);
       promptEl.value = '';
       vscode.postMessage({ type: 'startChat', models: selected, prompt, useChat: useChatEl.checked });
-    }
-
-    sendBtn.addEventListener('click', send);
-    promptEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        send();
-      }
     });
   </script>
 </body>
 </html>`;
-        return html;
     }
 }
-exports.OllamaChatViewProvider = OllamaChatViewProvider;
+exports.OllamaChatPanel = OllamaChatPanel;
 function getNonce() {
     let text = '';
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -280,4 +278,4 @@ function getNonce() {
     }
     return text;
 }
-//# sourceMappingURL=chatView.js.map
+//# sourceMappingURL=chatPanel.js.map

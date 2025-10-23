@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { OllamaClient } from './ollamaClient.js';
 import { OllamaChatViewProvider } from './chatView.js';
+import { OllamaChatPanel } from './chatPanel';
 
 let chatProvider: OllamaChatViewProvider | undefined;
 
@@ -19,13 +20,35 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  const chatPanel = new OllamaChatPanel(context.extensionUri, client);
+
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('ollamaAgent.chat', async () => {
-      await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
-      chatProvider?.reveal();
+      chatPanel.show(vscode.ViewColumn.Beside);
     })
   );
+
+  // Status bar shortcut to open the chat panel on the right
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
+  item.text = '$(comment-discussion) Ollama';
+  item.tooltip = 'Open Ollama Chat';
+  item.command = 'ollamaAgent.chat';
+  item.show();
+  context.subscriptions.push(item);
+
+  // Optional: show a one-time welcome tip to open chat
+  const shown = context.globalState.get('ollamaAgent.welcomeShown');
+  if (!shown) {
+    vscode.window
+      .showInformationMessage('Ollama Agent is ready. Open the chat on the right?', 'Open Chat')
+      .then((choice) => {
+        if (choice === 'Open Chat') {
+          vscode.commands.executeCommand('ollamaAgent.chat');
+        }
+      });
+    context.globalState.update('ollamaAgent.welcomeShown', true);
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('ollamaAgent.askSelection', async () => {

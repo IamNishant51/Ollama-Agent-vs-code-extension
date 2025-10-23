@@ -1,5 +1,6 @@
 {
   "name": "ollama-agent",
+  "publisher": "IamNishant51",
   "displayName": "ollama-agent",
   "description": "A Vs-code extension for locally downloaded ollama models to convert them into ai -agent",
   "version": "0.0.1",
@@ -57,25 +58,6 @@
           "group": "navigation@100"
         }
       ]
-    },
-    "viewsContainers": {
-      "secondarySideBar": [
-        {
-          "id": "ollamaAgent",
-          "title": "Ollama",
-          "icon": "media/ollama.svg"
-        }
-      ]
-    },
-    "views": {
-      "ollamaAgent": [
-        {
-          "type": "webview",
-          "id": "ollamaAgent.chatView",
-          "name": "Chat",
-          "icon": "media/ollama.svg"
-        }
-      ]
     }
   },
   "scripts": {
@@ -99,3 +81,5 @@
   },
   "dependencies": {
     
+  }
+}

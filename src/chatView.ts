@@ -90,15 +90,25 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     const nonce = getNonce();
     const styles = `
       :root { color-scheme: dark; }
-      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); }
-      .container { padding: 8px; display: flex; flex-direction: column; gap: 8px; height: 100vh; box-sizing: border-box; }
-      .row { display: flex; gap: 8px; align-items: center; }
-      select, textarea, button, input { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
-      button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; }
-      button:hover { background: var(--vscode-button-hoverBackground); }
-      .chat { flex: 1; overflow: auto; border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 8px; background: var(--vscode-editor-background); }
-      .msg { white-space: pre-wrap; font-family: var(--vscode-editor-font-family); }
-      .model { opacity: 0.8; font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 6px; }
+      body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); height:100vh; display:flex; }
+      .panel { display:flex; flex-direction:column; width:100%; }
+      .toolbar { display:flex; gap:8px; align-items:center; padding:8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); position:sticky; top:0; z-index:2; }
+      .title { font-weight:600; }
+      .select { min-width: 220px; }
+      .content { flex:1; overflow:auto; padding: 12px; display:flex; flex-direction:column; gap:12px; }
+      .composer { display:flex; gap:8px; padding:8px; border-top:1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
+      .prompt { flex:1; min-height: 64px; resize: vertical; width:100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
+      .send { width:auto; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius:4px; padding:6px 10px; cursor: pointer; }
+      .send:hover { background: var(--vscode-button-hoverBackground); }
+      select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; }
+
+      .bubble { max-width: 90%; padding:10px 12px; border-radius:10px; line-height:1.4; white-space:pre-wrap; }
+      .assistant { background: color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent); border: 1px solid var(--vscode-input-border); align-self:flex-start; }
+      .user { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); align-self:flex-end; }
+      .meta { font-size: 11px; opacity: .8; margin-bottom: 4px; }
+      .msg { display:flex; flex-direction:column; gap:4px; }
+      .tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+      .spacer { flex:1; }
     `;
 
     const html = `<!DOCTYPE html>
@@ -111,29 +121,31 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 <style>${styles}</style>
 </head>
 <body>
-  <div class="container">
-    <div class="row">
-      <select id="models" multiple size="4" aria-label="Models"></select>
-    </div>
-    <div class="row">
-      <textarea id="prompt" rows="4" placeholder="Ask something or describe a code change..."></textarea>
-    </div>
-    <div class="row">
-      <button id="send">Send</button>
-      <label style="display:flex; gap:6px; align-items:center; width:auto;">
+  <div class="panel">
+    <div class="toolbar">
+      <span class="title">Ollama</span>
+      <select id="models" class="select" multiple size="1" aria-label="Models"></select>
+      <span id="status" class="tag">Ready</span>
+      <span class="spacer"></span>
+      <label style="display:flex;gap:6px;align-items:center;">
         <input type="checkbox" id="useChat" checked /> Chat API
       </label>
     </div>
-    <div id="chat" class="chat" aria-live="polite"></div>
+    <div id="chat" class="content" aria-live="polite"></div>
+    <div class="composer">
+      <textarea id="prompt" class="prompt" placeholder="Ask anything about your codebase..."></textarea>
+      <button id="send" class="send">Send</button>
+    </div>
   </div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const modelsEl = document.getElementById('models');
-    const promptEl = document.getElementById('prompt');
-    const chatEl = document.getElementById('chat');
-    const sendBtn = document.getElementById('send');
-    const useChatEl = document.getElementById('useChat');
+  const modelsEl = document.getElementById('models');
+  const promptEl = document.getElementById('prompt');
+  const chatEl = document.getElementById('chat');
+  const sendBtn = document.getElementById('send');
+  const useChatEl = document.getElementById('useChat');
+  const statusEl = document.getElementById('status');
 
     vscode.postMessage({ type: 'requestModels' });
 
@@ -149,45 +161,75 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
           opt.value = m; opt.textContent = m; modelsEl.appendChild(opt);
         });
       }
+      let lastAssistant;
       if (msg.type === 'chatStart') {
-        const header = document.createElement('div');
-        header.className = 'model';
-        header.textContent = 'Model: ' + msg.model;
-        chatEl.appendChild(header);
+        statusEl.textContent = 'Streaming';
+        const wrap = document.createElement('div');
+        wrap.className = 'msg';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = msg.model;
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble assistant';
+        wrap.appendChild(meta);
+        wrap.appendChild(bubble);
+        chatEl.appendChild(wrap);
+        lastAssistant = bubble;
       }
       if (msg.type === 'chatChunk') {
-        const last = chatEl.lastElementChild;
-        let target;
-        if (!last || !last.classList.contains('msg')) {
-          target = document.createElement('div');
-          target.className = 'msg';
-          chatEl.appendChild(target);
-        } else {
-          target = last;
+        if (!lastAssistant) {
+          const bubble = document.createElement('div');
+          bubble.className = 'bubble assistant';
+          chatEl.appendChild(bubble);
+          lastAssistant = bubble;
         }
-        target.textContent += msg.text;
+        lastAssistant.textContent += msg.text;
         chatEl.scrollTop = chatEl.scrollHeight;
       }
       if (msg.type === 'chatDone') {
-        const sep = document.createElement('hr');
-        chatEl.appendChild(sep);
+        statusEl.textContent = 'Ready';
       }
       if (msg.type === 'error' || msg.type === 'chatError') {
-        const err = document.createElement('div');
-        err.className = 'msg';
-        err.style.color = 'var(--vscode-editorError-foreground)';
-        err.textContent = 'Error: ' + msg.message;
-        chatEl.appendChild(err);
+        statusEl.textContent = 'Error';
+        const errWrap = document.createElement('div');
+        errWrap.className = 'msg';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble assistant';
+        bubble.style.color = 'var(--vscode-editorError-foreground)';
+        bubble.textContent = 'Error: ' + msg.message;
+        errWrap.appendChild(bubble);
+        chatEl.appendChild(errWrap);
       }
     });
 
-    sendBtn.addEventListener('click', () => {
+    function addUserMessage(text) {
+      const wrap = document.createElement('div');
+      wrap.className = 'msg';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble user';
+      bubble.textContent = text;
+      wrap.appendChild(bubble);
+      chatEl.appendChild(wrap);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function send() {
       const selected = Array.from(modelsEl.selectedOptions).map(o => o.value);
       const prompt = promptEl.value.trim();
       if (!selected.length || !prompt) {
         return;
       }
+      addUserMessage(prompt);
+      promptEl.value = '';
       vscode.postMessage({ type: 'startChat', models: selected, prompt, useChat: useChatEl.checked });
+    }
+
+    sendBtn.addEventListener('click', send);
+    promptEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        send();
+      }
     });
   </script>
 </body>
