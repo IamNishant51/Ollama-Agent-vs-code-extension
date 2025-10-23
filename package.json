@@ -1,16 +1,42 @@
 {
   "name": "ollama-agent",
   "publisher": "NishantUnavane",
-  "displayName": "ollama-agent",
-  "description": "A Vs-code extension for locally downloaded ollama models to convert them into ai -agent",
-  "version": "0.0.1",
+  "displayName": "Ollama Agent - Local AI Coding Assistant",
+  "description": "Transform your locally-running Ollama models into an intelligent coding agent. Chat, generate code, edit files, and automate tasks—all running 100% locally with full privacy.",
+  "version": "1.0.0",
+  "icon": "media/ollama.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IamNishant51/Ollama-Agent-vs-code-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/IamNishant51/Ollama-Agent-vs-code-extension/issues"
+  },
+  "homepage": "https://github.com/IamNishant51/Ollama-Agent-vs-code-extension#readme",
+  "license": "MIT",
+  "keywords": [
+    "ollama",
+    "ai",
+    "agent",
+    "coding-assistant",
+    "copilot",
+    "local-ai",
+    "llama",
+    "mistral",
+    "code-generation",
+    "refactoring",
+    "chat",
+    "privacy"
+  ],
   "engines": {
     "vscode": "^1.105.0"
   },
   "categories": [
-    "Other",
     "AI",
-    "Chat"
+    "Chat",
+    "Programming Languages",
+    "Snippets",
+    "Formatters"
   ],
   "activationEvents": [
     "onStartupFinished"

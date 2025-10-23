@@ -460,46 +460,79 @@ ${snapshot}`;
     }
     async runAgentConversation(model, prompt) {
         // Initialize conversation with system tool instructions
-        const toolInstr = `You are a coding agent inside VS Code.
-You can request workspace information or perform file operations via tool calls embedded in fenced code blocks:
+        const toolInstr = `You are an intelligent coding agent running inside VS Code with full workspace access.
+
+CAPABILITIES:
+You can explore the workspace, read/write files, run commands, and edit code using tool calls in fenced blocks.
+
+TOOL SYNTAX:
 \`\`\`tool
-{"cmd":"listFiles","glob":"**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,json,md}"}
+{"cmd":"listFiles","glob":"**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,json,md}","maxResults":500}
 \`\`\`
-or read a file:
+
 \`\`\`tool
 {"cmd":"readFile","path":"src/extension.ts","startLine":1,"endLine":200}
 \`\`\`
-Create or modify files:
+
+\`\`\`tool
+{"cmd":"search","query":"function\\\\s+\\\\w+","glob":"src/**/*.ts"}
+\`\`\`
+
+\`\`\`tool
+{"cmd":"projectIndex","detail":true}
+\`\`\`
+
 \`\`\`tool
 {"cmd":"createFile","path":"src/newFile.ts"}
 \`\`\`
+
 \`\`\`tool
-{"cmd":"writeFile","path":"src/index.ts","content":"<FULL FILE CONTENT HERE>"}
+{"cmd":"writeFile","path":"src/index.ts","content":"<FULL FILE CONTENT>"}
 \`\`\`
-Rename or delete files:
+
 \`\`\`tool
 {"cmd":"renameFile","path":"src/old.ts","newPath":"src/new.ts"}
 \`\`\`
+
 \`\`\`tool
 {"cmd":"deleteFile","path":"src/temp.ts"}
 \`\`\`
-Run small tasks (timeout 15s):
+
 \`\`\`tool
-{"cmd":"runTask","command":"npm test --silent"}
+{"cmd":"runTask","command":"npm test"}
 \`\`\`
-Project index summary (fast context):
-\`\`\`tool
-{"cmd":"projectIndex","detail":false}
+
+WORKFLOW:
+1. Start by getting project context (projectIndex or listFiles)
+2. Read relevant files to understand the code
+3. Search for patterns if needed
+4. Make informed changes
+
+OUTPUT EDITS:
+When ready to edit files, output an \`edits\` JSON block:
+\`\`\`edits
+{
+  "changes": [
+    {"uri":"relative/path/file.ts", "newText":"<FULL CONTENT>", "create":true},
+    {"uri":"existing.ts", "range":{"start":{"line":5,"character":0},"end":{"line":10,"character":0}}, "newText":"replacement"}
+  ]
+}
 \`\`\`
-Always propose file changes by outputting an \`edits\` fenced block with JSON { changes: [...] } compatible with VS Code WorkspaceEdit after you have enough context.
-Keep outputs concise. Avoid printing entire files unless necessary.`;
+
+BEST PRACTICES:
+- Always gather context before making changes
+- Read files partially (startLine/endLine) for large files
+- Use search to find patterns across files
+- Provide complete file content for writeFile
+- Test your changes when possible with runTask
+- Be precise and efficient`;
         this.convo = [
             { role: 'system', content: toolInstr },
             { role: 'user', content: prompt }
         ];
         this.assistantBuffer = '';
         let steps = 0;
-        const maxSteps = 3;
+        const maxSteps = 8;
         // Track visible output minus tool blocks to keep UI clean
         let visibleSent = 0;
         while (steps < maxSteps) {
@@ -662,9 +695,10 @@ ASSISTANT: ${this.assistantBuffer}`;
             const cmd = String(spec.cmd || '').toLowerCase();
             if (cmd === 'listfiles') {
                 const glob = spec.glob && typeof spec.glob === 'string' ? spec.glob : '**/*';
-                const uris = await vscode.workspace.findFiles(glob, '**/node_modules/**', 200);
+                const maxResults = typeof spec.maxResults === 'number' ? spec.maxResults : 500;
+                const uris = await vscode.workspace.findFiles(glob, '**/node_modules/**', maxResults);
                 const rel = uris.map((u) => vscode.workspace.asRelativePath(u));
-                return `FILES(${rel.length}):\n` + rel.join('\n');
+                return `FILES(${rel.length}${rel.length >= maxResults ? '+' : ''}):\n` + rel.join('\n');
             }
             if (cmd === 'readfile') {
                 const path = String(spec.path || spec.uri || '');
@@ -692,12 +726,21 @@ ASSISTANT: ${this.assistantBuffer}`;
             if (cmd === 'search') {
                 const query = String(spec.query || '');
                 const glob = spec.glob && typeof spec.glob === 'string' ? spec.glob : '**/*';
+                const maxResults = typeof spec.maxResults === 'number' ? spec.maxResults : 500;
                 if (!query) {
                     return 'search: missing query';
                 }
-                const files = await vscode.workspace.findFiles(glob, '**/node_modules/**', 200);
+                const files = await vscode.workspace.findFiles(glob, '**/node_modules/**', maxResults);
                 const out = [];
-                const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+                // Support regex if query looks like a regex pattern
+                let re;
+                try {
+                    re = new RegExp(query, 'i');
+                }
+                catch {
+                    // Fallback to escaped literal
+                    re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+                }
                 for (const uri of files) {
                     const data = await vscode.workspace.fs.readFile(uri);
                     const text = Buffer.from(data).toString('utf8');
@@ -707,11 +750,11 @@ ASSISTANT: ${this.assistantBuffer}`;
                             out.push(`${vscode.workspace.asRelativePath(uri)}:${idx + 1}: ${line.trim()}`);
                         }
                     });
-                    if (out.length > 300) {
+                    if (out.length > maxResults) {
                         break;
                     }
                 }
-                return `SEARCH_RESULTS(${out.length}):\n` + out.slice(0, 300).join('\n');
+                return `SEARCH_RESULTS(${out.length}${out.length >= maxResults ? '+' : ''}):\n` + out.slice(0, maxResults).join('\n');
             }
             if (cmd === 'projectindex') {
                 const detail = !!spec.detail;
@@ -799,13 +842,13 @@ ASSISTANT: ${this.assistantBuffer}`;
                 const { promisify } = await import('node:util');
                 const pexec = promisify(exec);
                 try {
-                    const { stdout, stderr } = await pexec(command, { cwd, timeout: 15000 });
+                    const { stdout, stderr } = await pexec(command, { cwd, timeout: 30000, maxBuffer: 1024 * 1024 * 5 });
                     const out = (stdout || stderr || '').toString();
-                    return `RUN(${command})\n` + out.slice(0, 4000);
+                    return `RUN(${command}):\n` + out.slice(0, 8000);
                 }
                 catch (e) {
                     const out = String(e?.stdout || e?.stderr || e?.message || e);
-                    return `RUN_ERROR(${command})\n` + out.slice(0, 4000);
+                    return `RUN_ERROR(${command}):\n` + out.slice(0, 8000);
                 }
             }
             return `Unknown tool cmd: ${cmd}`;
