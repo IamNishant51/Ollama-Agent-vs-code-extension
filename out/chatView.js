@@ -49,13 +49,13 @@ class OllamaChatViewProvider {
     resolveWebviewView(webviewView) {
         this._view = webviewView;
         const webview = webviewView.webview;
-        webview.options = { enableScripts: true };
+        webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this._context.extensionUri, vscode.Uri.joinPath(this._context.extensionUri, 'media')]
+        };
         webview.html = this.getHtmlForWebview(webview);
-        // Open the right-side chat panel once when this launcher view first resolves.
-        if (!this._autoOpenedPanel) {
-            this._autoOpenedPanel = true;
-            setTimeout(() => vscode.commands.executeCommand('ollamaAgent.chat'), 50);
-        }
+        // Note: Avoid auto-opening the chat panel here to prevent concurrent webview initialization
+        // which can sometimes cause service worker registration races on some systems.
         webview.onDidReceiveMessage(async (msg) => {
             switch (msg?.type) {
                 case 'openChatPanel':
@@ -210,7 +210,7 @@ class OllamaChatViewProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ollama Agent</title>
   <style>${styles}</style>
@@ -228,11 +228,19 @@ class OllamaChatViewProvider {
       <div class="row"><span class="label">Quick Actions</span></div>
       <div class="grid">
         <button class="btn" id="qa-explain">Explain Selection</button>
+        <button class="btn" id="qa-readme">README Generator</button>
+        <button class="btn" id="qa-brush-simplify">Brush: Simplify</button>
+        <button class="btn" id="qa-brush-types">Brush: Add Types</button>
+        <button class="btn" id="qa-brush-optimize">Brush: Optimize</button>
         <button class="btn" id="qa-edit">Inline Edit…</button>
         <button class="btn" id="qa-tests">Generate Tests</button>
         <button class="btn" id="qa-problems">Analyze Problems</button>
         <button class="btn" id="qa-commit">Commit Message</button>
         <button class="btn" id="qa-cmd">Explain Command…</button>
+        <button class="btn" id="qa-add-file">Add File Here</button>
+        <button class="btn" id="qa-add-file-ai">Add File (AI)</button>
+        <button class="btn" id="qa-pr-summary">PR Summary</button>
+        <button class="btn" id="qa-pr-review">PR Review</button>
       </div>
     </div>
 
@@ -280,6 +288,18 @@ class OllamaChatViewProvider {
     document.getElementById('qa-explain')?.addEventListener('click', () => {
       vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainSelection' });
     });
+    document.getElementById('qa-readme')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.openReadmeMode' });
+    });
+    document.getElementById('qa-brush-simplify')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.brush.simplify' });
+    });
+    document.getElementById('qa-brush-types')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.brush.addTypes' });
+    });
+    document.getElementById('qa-brush-optimize')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.brush.optimize' });
+    });
     document.getElementById('qa-edit')?.addEventListener('click', () => {
       const instr = prompt('Inline edit instruction (e.g., "add docs" or "optimize code")') || '';
       if (instr.trim()) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.inlineEdit', args: [instr.trim()] });
@@ -296,6 +316,18 @@ class OllamaChatViewProvider {
     document.getElementById('qa-cmd')?.addEventListener('click', () => {
       const cmd = prompt('Paste a shell command to explain') || '';
       if (cmd.trim()) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainCommand' });
+    });
+    document.getElementById('qa-add-file')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.addFileHere' });
+    });
+    document.getElementById('qa-add-file-ai')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.addFileAI' });
+    });
+    document.getElementById('qa-pr-summary')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.prSummary' });
+    });
+    document.getElementById('qa-pr-review')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.prReviewComments' });
     });
 
     function refreshState(s) {

@@ -63,7 +63,11 @@ class OllamaChatPanel {
         }
         this.panel = vscode.window.createWebviewPanel('ollamaAgent.chatPanel', 'Ollama Chat', { viewColumn: column, preserveFocus: true }, {
             enableScripts: true,
-            retainContextWhenHidden: true
+            retainContextWhenHidden: true,
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.extensionUri, 'media'),
+                this.extensionUri
+            ]
         });
         this.panel.onDidDispose(() => (this.panel = undefined));
         this.panel.webview.html = this.getHtml(this.panel.webview);
@@ -73,6 +77,55 @@ class OllamaChatPanel {
         }
         this.panel.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
+                case 'startReadme': {
+                    try {
+                        const model = msg.model || '';
+                        const style = msg.style || 'General';
+                        const placement = msg.placement || 'GitHub';
+                        const notes = msg.notes || '';
+                        const deep = !!msg.deep;
+                        const chosen = model || (await this.client.listModels())[0];
+                        if (!chosen) {
+                            this.panel?.webview.postMessage({ type: 'error', message: 'No model available.' });
+                            return;
+                        }
+                        const { stats, snapshot } = await this.collectRepoSnapshot(deep ? 1200000 : 600000);
+                        const instr = `You are generating a complete, production-quality README.md for this repository.
+Requirements:
+- Output ONLY Markdown for README.md. No meta commentary, no caveats, no apologies.
+- Tailor the tone and structure for: ${placement}.
+- Style: ${style}. Focus on what's most useful for that style.
+- Include: Title, Overview, Key Features, Installation, Setup (env vars), Scripts, Usage (commands + examples), Configuration, Development, Testing, Troubleshooting, and optional Roadmap.
+- Use fenced code blocks for commands. Use relative links to files (e.g., src/index.ts). Infer sensible defaults if details are missing.
+${notes ? `- Additional notes to honor: ${notes}` : ''}
+
+REPO STATS:
+${stats}
+
+REPO SNAPSHOT (truncated):
+${snapshot}`;
+                        const m = chosen;
+                        this.panel?.webview.postMessage({ type: 'chatStart', model: m });
+                        let out = '';
+                        const onToken = (t) => {
+                            out += t;
+                            this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: t });
+                        };
+                        await this.client.generate(m, instr, true, onToken);
+                        this.panel?.webview.postMessage({ type: 'chatDone', model: m });
+                        // Open a preview to apply README.md
+                        const ws = vscode.workspace.workspaceFolders?.[0];
+                        if (ws) {
+                            const readmeRel = 'README.md';
+                            const payload = { changes: [{ uri: readmeRel, newText: out }] };
+                            await vscode.commands.executeCommand('ollamaAgent.previewEdits', payload);
+                        }
+                    }
+                    catch (e) {
+                        this.panel?.webview.postMessage({ type: 'error', message: 'README generation failed: ' + String(e?.message || e) });
+                    }
+                    break;
+                }
                 case 'runCommand': {
                     try {
                         const id = String(msg.command || '');
@@ -325,7 +378,7 @@ class OllamaChatPanel {
 <html>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ollama Chat</title>
 <style>${styles}</style>
@@ -341,6 +394,69 @@ class OllamaChatPanel {
     }
     close() {
         this.panel?.dispose();
+    }
+    // Called from command to reveal the README generator UI in the webview
+    openReadmeGenerator() {
+        if (!this.panel) {
+            this.show(vscode.ViewColumn.Beside);
+        }
+        this.panel?.webview.postMessage({ type: 'openReadmeGenerator' });
+    }
+    async collectRepoSnapshot(maxBytes = 600000) {
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        if (!ws) {
+            return { stats: 'No workspace open.', snapshot: '' };
+        }
+        const include = '**/*';
+        const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/*.min.*,**/*.lock,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/*.ico,**/*.pdf,**/*.zip,**/*.jar,**/*.exe}';
+        const uris = await vscode.workspace.findFiles(include, exclude, 2000);
+        let usedBytes = 0;
+        let filesIncluded = 0;
+        let totalFiles = uris.length;
+        const parts = [];
+        for (const uri of uris) {
+            try {
+                const data = await vscode.workspace.fs.readFile(uri);
+                if (data.byteLength > 300_000) {
+                    continue;
+                } // skip very large files
+                // Heuristic binary check
+                const buf = data.slice(0, Math.min(data.byteLength, 4096));
+                let nonText = 0;
+                for (let i = 0; i < buf.length; i++) {
+                    const c = buf[i];
+                    if (c === 9 || c === 10 || c === 13) {
+                        continue;
+                    } // tab/lf/cr
+                    if (c < 32 || c > 126) {
+                        nonText++;
+                    }
+                }
+                if (nonText > 100) {
+                    continue;
+                }
+                const text = Buffer.from(data).toString('utf8');
+                const lines = text.split(/\r?\n/);
+                const head = lines.slice(0, 300).join('\n');
+                const entry = `FILE: ${vscode.workspace.asRelativePath(uri)} [${lines.length} lines]\n${head}`;
+                const bytes = Buffer.byteLength(entry, 'utf8') + 2;
+                if (usedBytes + bytes > maxBytes) {
+                    break;
+                }
+                parts.push(entry);
+                usedBytes += bytes;
+                filesIncluded++;
+                if (usedBytes > maxBytes * 0.98) {
+                    break;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+        const mb = (usedBytes / (1024 * 1024)).toFixed(2);
+        const stats = `Files scanned: ${totalFiles}, included: ${filesIncluded}, snapshot size: ${mb} MB (truncated)`;
+        return { stats, snapshot: parts.join('\n\n') };
     }
     async runAgentConversation(model, prompt) {
         // Initialize conversation with system tool instructions
@@ -370,6 +486,10 @@ Rename or delete files:
 Run small tasks (timeout 15s):
 \`\`\`tool
 {"cmd":"runTask","command":"npm test --silent"}
+\`\`\`
+Project index summary (fast context):
+\`\`\`tool
+{"cmd":"projectIndex","detail":false}
 \`\`\`
 Always propose file changes by outputting an \`edits\` fenced block with JSON { changes: [...] } compatible with VS Code WorkspaceEdit after you have enough context.
 Keep outputs concise. Avoid printing entire files unless necessary.`;
@@ -592,6 +712,11 @@ ASSISTANT: ${this.assistantBuffer}`;
                     }
                 }
                 return `SEARCH_RESULTS(${out.length}):\n` + out.slice(0, 300).join('\n');
+            }
+            if (cmd === 'projectindex') {
+                const detail = !!spec.detail;
+                const mod = await import('./indexer.js');
+                return mod.ProjectIndexer.summary(detail);
             }
             if (cmd === 'createfile') {
                 const path = String(spec.path || spec.uri || '');

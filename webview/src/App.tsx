@@ -37,6 +37,11 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<'read' | 'agent'>('read');
+  const [showReadme, setShowReadme] = useState(false);
+  const [readmeStyle, setReadmeStyle] = useState('General');
+  const [readmePlacement, setReadmePlacement] = useState('GitHub');
+  const [readmeNotes, setReadmeNotes] = useState('');
+  const [readmeDeep, setReadmeDeep] = useState(true);
 
   useEffect(() => {
     injectStyles();
@@ -111,6 +116,13 @@ export default function App() {
           appendAssistant(`Error: ${'message' in msg ? msg.message : ''}`);
           saveSnapshot();
           break;
+        default: {
+          // @ts-ignore: custom events
+          if ((msg as any).type === 'openReadmeGenerator') {
+            setShowReadme(true);
+          }
+          break;
+        }
       }
     };
     window.addEventListener('message', onMessage);
@@ -128,6 +140,21 @@ export default function App() {
     setStatus('Streaming');
     vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat });
     setPrompt('');
+  }
+
+  function submitReadme() {
+    const model = selected || (models[0] || '');
+    if (!model) return;
+    vscode.postMessage({
+      type: 'startReadme',
+      model,
+      style: readmeStyle,
+      placement: readmePlacement,
+      notes: readmeNotes,
+      deep: readmeDeep
+    });
+    // Also add a user bubble to mark the action
+    appendUser(`Generate a ${readmeStyle} README for ${readmePlacement}${readmeNotes ? ' with notes: ' + readmeNotes : ''}`);
   }
 
   function togglePause() {
@@ -403,20 +430,7 @@ export default function App() {
         </div>
         <span className="tag">{paused ? 'Paused' : status}{(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}</span>
         <span className="spacer" />
-        <div className="actions" title="Quick actions">
-          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainSelection' })}>Explain</button>
-          <button className="btn" onClick={() => {
-            const instr = window.prompt('Inline edit instruction (e.g., "add docs" or "convert to async/await")')?.trim();
-            if (instr) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.inlineEdit', args: [instr] });
-          }}>Edit</button>
-          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateTests' })}>Tests</button>
-          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.analyzeProblems' })}>Problems</button>
-          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateCommitMessage' })}>Commit</button>
-          <button className="btn" onClick={() => {
-            const cmd = window.prompt('Shell command to explain')?.trim();
-            if (cmd) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainCommand' });
-          }}>Explain Cmd</button>
-        </div>
+        <button className="btn" onClick={() => setShowReadme((v) => !v)}>README</button>
         {(sending || pending > 0) && (
           <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
         )}
@@ -442,6 +456,46 @@ export default function App() {
           </div>
         </aside>
         <main className="chat">
+          {showReadme && (
+            <div style={{ padding: 12, borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(20,20,20,0.6)' }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: .85 }}>Style</span>
+                  <select value={readmeStyle} onChange={(e) => setReadmeStyle(e.target.value)}>
+                    <option>General</option>
+                    <option>Technical (Functionality/API)</option>
+                    <option>Product/Showcase</option>
+                    <option>Library/Package</option>
+                    <option>CLI Tool</option>
+                    <option>Backend Service</option>
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: .85 }}>Placement</span>
+                  <select value={readmePlacement} onChange={(e) => setReadmePlacement(e.target.value)}>
+                    <option>GitHub</option>
+                    <option>VS Code Marketplace</option>
+                    <option>Internal Wiki</option>
+                    <option>Website</option>
+                  </select>
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input type="checkbox" checked={readmeDeep} onChange={(e) => setReadmeDeep(e.target.checked)} />
+                  <span style={{ fontSize: 12, opacity: .85 }}>Read more of the codebase (slower)</span>
+                </label>
+              </div>
+              <textarea
+                placeholder="Additional notes: highlight features, target audience, badges, license, etc."
+                value={readmeNotes}
+                onChange={(e) => setReadmeNotes(e.target.value)}
+                style={{ width: '100%', minHeight: 60 }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button className="send" onClick={submitReadme}>Generate README</button>
+                <button className="btn" onClick={() => setShowReadme(false)}>Hide</button>
+              </div>
+            </div>
+          )}
           <div id="content" ref={contentRef} className="content" aria-live="polite" />
           <div className="composer">
         <textarea
@@ -820,7 +874,7 @@ function injectStyles() {
       100% { margin-left: 100%; }
     }
 
-    .actions { display:flex; gap:6px; align-items:center; }
+    /* Quick Actions removed from right panel per request */
   `;
   const el = document.createElement('style');
   el.textContent = css;
