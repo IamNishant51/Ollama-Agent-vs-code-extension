@@ -30,6 +30,16 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
         case 'openChatPanel':
           vscode.commands.executeCommand('ollamaAgent.chat');
           break;
+        case 'runCommand': {
+          try {
+            const id = String(msg.command || '');
+            const args = Array.isArray(msg.args) ? msg.args : msg.arg !== undefined ? [msg.arg] : [];
+            if (id) {
+              await vscode.commands.executeCommand(id, ...args);
+            }
+          } catch (e) {}
+          break;
+        }
         case 'requestSettings': {
           const cfg = vscode.workspace.getConfiguration('ollamaAgent');
           const systemPrompt = cfg.get<string>('systemPrompt', 'You are a helpful coding assistant.');
@@ -149,6 +159,9 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
       .btn:hover { background: rgba(255,255,255,0.12); transform: translateY(-1px); }
       .btn.primary { background: linear-gradient(135deg, #1a73e8, #1559b3); color:#fff; border:none; }
 
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+
       .subtle { opacity: .75; font-size: 12px; }
       .spacer { flex: 1; }
       /* Responsive adjustments */
@@ -178,6 +191,18 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
     <div class="section">
       <div class="row"><span class="label">Open Chat</span><button class="btn primary" id="open">Open</button></div>
+    </div>
+
+    <div class="section">
+      <div class="row"><span class="label">Quick Actions</span></div>
+      <div class="grid">
+        <button class="btn" id="qa-explain">Explain Selection</button>
+        <button class="btn" id="qa-edit">Inline Edit…</button>
+        <button class="btn" id="qa-tests">Generate Tests</button>
+        <button class="btn" id="qa-problems">Analyze Problems</button>
+        <button class="btn" id="qa-commit">Commit Message</button>
+        <button class="btn" id="qa-cmd">Explain Command…</button>
+      </div>
     </div>
 
     <div class="section">
@@ -219,6 +244,27 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
     document.getElementById('open')?.addEventListener('click', () => {
       vscode.postMessage({ type: 'openChatPanel' });
+    });
+
+    document.getElementById('qa-explain')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainSelection' });
+    });
+    document.getElementById('qa-edit')?.addEventListener('click', () => {
+      const instr = prompt('Inline edit instruction (e.g., "add docs" or "optimize code")') || '';
+      if (instr.trim()) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.inlineEdit', args: [instr.trim()] });
+    });
+    document.getElementById('qa-tests')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateTests' });
+    });
+    document.getElementById('qa-problems')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.analyzeProblems' });
+    });
+    document.getElementById('qa-commit')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateCommitMessage' });
+    });
+    document.getElementById('qa-cmd')?.addEventListener('click', () => {
+      const cmd = prompt('Paste a shell command to explain') || '';
+      if (cmd.trim()) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainCommand' });
     });
 
     function refreshState(s) {

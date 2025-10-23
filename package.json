@@ -44,6 +44,11 @@
           "enum": ["read", "agent"],
           "default": "read",
           "description": "Read: never auto-apply edits; Agent: auto-apply edits suggested by the AI"
+        },
+        "ollamaAgent.enableInlineCompletions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Experimental: provide basic inline code completions using the selected model. May be slow."
         }
       }
     },
@@ -81,13 +86,49 @@
         "command": "ollamaAgent.generateCode",
         "title": "Ollama Agent: Generate Code Here",
         "icon": "$(code)"
+      },
+      {
+        "command": "ollamaAgent.inlineEdit",
+        "title": "Ollama Agent: Edit Selection by Instruction",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "ollamaAgent.explainSelection",
+        "title": "Ollama Agent: Explain Selection",
+        "icon": "$(book)"
+      },
+      {
+        "command": "ollamaAgent.generateTests",
+        "title": "Ollama Agent: Generate Unit Tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "ollamaAgent.generateCommitMessage",
+        "title": "Ollama Agent: Generate Commit Message",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "ollamaAgent.analyzeProblems",
+        "title": "Ollama Agent: Analyze Problems",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "ollamaAgent.explainCommand",
+        "title": "Ollama Agent: Explain Shell Command",
+        "icon": "$(terminal)"
       }
     ],
   "menus": {
       "commandPalette": [
         { "command": "ollamaAgent.chat", "when": "true" },
         { "command": "ollamaAgent.askSelection", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.generateCode", "when": "editorTextFocus" }
+        { "command": "ollamaAgent.generateCode", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.inlineEdit", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.explainSelection", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.generateTests", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.generateCommitMessage", "when": "true" },
+        { "command": "ollamaAgent.analyzeProblems", "when": "editorTextFocus" },
+        { "command": "ollamaAgent.explainCommand", "when": "true" }
       ],
       "commandCenter": [
         { "command": "ollamaAgent.chat", "group": "navigation@10" }
@@ -100,6 +141,14 @@
         {
           "command": "ollamaAgent.generateCode",
           "group": "navigation@100"
+        },
+        {
+          "command": "ollamaAgent.inlineEdit",
+          "group": "navigation@101"
+        },
+        {
+          "command": "ollamaAgent.explainSelection",
+          "group": "navigation@102"
         }
       ],
       "editor/title": [

@@ -2,6 +2,16 @@ import * as vscode from 'vscode';
 import { OllamaClient } from './ollamaClient.js';
 import { OllamaChatViewProvider } from './chatView.js';
 import { OllamaChatPanel } from './chatPanel';
+import { exec as cpExec } from 'child_process';
+import { promisify } from 'util';
+const exec = promisify(cpExec);
+
+async function promiseWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return await Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)) as any,
+  ]);
+}
 
 let chatProvider: OllamaChatViewProvider | undefined;
 
@@ -41,6 +51,130 @@ export function activate(context: vscode.ExtensionContext) {
   const previewProvider = new EditPreviewProvider();
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider('ollama-edit', previewProvider)
+  );
+
+  // Optional inline completions (experimental)
+  const enableInline = vscode.workspace.getConfiguration('ollamaAgent').get<boolean>('enableInlineCompletions', false);
+  if (enableInline) {
+    let cachedModel: string | undefined;
+    context.subscriptions.push(
+      vscode.languages.registerInlineCompletionItemProvider({ scheme: 'file' }, {
+        provideInlineCompletionItems: async (doc, pos, ctx, token) => {
+          try {
+            if (token.isCancellationRequested) { return; }
+            // Choose a model lazily
+            if (!cachedModel) {
+              const models = await client.listModels();
+              cachedModel = models[0];
+            }
+            if (!cachedModel) { return; }
+            // Gather small context around cursor
+            const range = new vscode.Range(new vscode.Position(Math.max(0, pos.line - 40), 0), pos);
+            const before = doc.getText(range);
+            const lang = doc.languageId;
+            const prompt = `Continue the following ${lang} code. Output only the next completion snippet (<= 80 characters) without newlines if possible, no backticks, no explanations.\n\n${before}`;
+            const p = client.generate(cachedModel, prompt, false);
+            const result = await promiseWithTimeout(p, 1500).catch(() => '');
+            const text = String(result || '').split('\n')[0].slice(0, 80);
+            if (!text.trim()) { return; }
+            const item = { insertText: text } as vscode.InlineCompletionItem;
+            return { items: [item] } as vscode.InlineCompletionList;
+          } catch {
+            return;
+          }
+        }
+      })
+    );
+  }
+
+  // Generate unit tests for current file
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.generateTests', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) { vscode.window.showErrorMessage('Open a source file to generate tests.'); return; }
+      const doc = editor.document;
+      const code = doc.getText();
+      const lang = doc.languageId;
+      const baseName = doc.uri.path.split('/').pop() || 'file';
+      const ext = baseName.includes('.') ? baseName.split('.').pop() : 'ts';
+      const testExt = ext === 'js' ? 'test.js' : ext === 'jsx' ? 'test.jsx' : ext === 'tsx' ? 'test.tsx' : 'test.ts';
+      const testName = baseName.replace(/\.[^.]+$/, '') + '.' + testExt;
+      const wsRel = vscode.workspace.asRelativePath(doc.uri);
+      const instr = `Write unit tests for the following ${lang} code from ${wsRel}. Prefer Jest (and React Testing Library if React). Return ONLY the test file content with no backticks.`;
+
+      const models = await client.listModels();
+      const chosen = await vscode.window.showQuickPick(models, { placeHolder: 'Select a model' });
+      if (!chosen) { return; }
+      let out = '';
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Generating tests with ${chosen}` }, async () => {
+        await client.generate(chosen, `${instr}\n\nCODE:\n${code}`, true, (t: string) => { out += t; });
+      });
+
+      const folder = vscode.Uri.joinPath(vscode.Uri.parse(doc.uri.toString()).with({ path: doc.uri.path.replace(/\/[\w.-]+$/, '/') }));
+      const testRel = (vscode.workspace.asRelativePath(folder) || '') + testName;
+      const payload = { changes: [ { uri: testRel, newText: out, create: true } ] };
+      await vscode.commands.executeCommand('ollamaAgent.previewEdits', payload);
+    })
+  );
+
+  // Generate Conventional Commit message from staged or working diff
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.generateCommitMessage', async () => {
+      try {
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!cwd) { vscode.window.showErrorMessage('Open a git workspace.'); return; }
+        let diff = '';
+        try { diff = (await exec('git diff --cached', { cwd })).stdout; } catch { diff = ''; }
+        if (!diff.trim()) {
+          try { diff = (await exec('git diff', { cwd })).stdout; } catch { diff = ''; }
+        }
+        if (!diff.trim()) { vscode.window.showInformationMessage('No git changes to summarize.'); return; }
+
+        const models = await client.listModels();
+        const chosen = await vscode.window.showQuickPick(models, { placeHolder: 'Select a model' });
+        if (!chosen) { return; }
+        const prompt = `You are a Conventional Commits assistant. From the git diff below, write a concise commit message with a type (feat, fix, refactor, docs, chore, test), a short imperative subject (max ~72 char), and an optional body with bullets. Output SUBJECT on the first line, then a blank line, then BODY.\n\nDIFF:\n${diff}`;
+        let msg = '';
+        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Generating commit message' }, async () => {
+          await client.generate(chosen, prompt, true, (t: string) => { msg += t; });
+        });
+        msg = msg.trim();
+        await vscode.env.clipboard.writeText(msg);
+        vscode.window.showInformationMessage('Commit message copied to clipboard.', 'Open SCM').then((choice) => {
+          if (choice === 'Open SCM') { vscode.commands.executeCommand('workbench.view.scm'); }
+        });
+      } catch (e: any) {
+        vscode.window.showErrorMessage('Commit message generation failed: ' + String(e?.message || e));
+      }
+    })
+  );
+
+  // Analyze current file problems and ask AI for fixes
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.analyzeProblems', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) { vscode.window.showInformationMessage('Open a file to analyze problems.'); return; }
+      const doc = editor.document;
+      const diags = vscode.languages.getDiagnostics(doc.uri);
+      if (!diags.length) { vscode.window.showInformationMessage('No problems found in current file.'); return; }
+      const summary = diags.slice(0, 50).map(d => `L${d.range.start.line + 1}:${d.range.start.character + 1} ${d.severity}: ${d.message}`).join('\n');
+      const pre = `Fix the following problems reported by the linter/TypeScript for ${vscode.workspace.asRelativePath(doc.uri)}. Provide specific code edits.\n\nPROBLEMS:\n${summary}\n\nCODE:\n`;
+      const code = doc.getText();
+      chatPanel.prefill(pre + code);
+      chatPanel.show(vscode.ViewColumn.Beside);
+    })
+  );
+
+  // Explain a shell command (from selection or input)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.explainCommand', async () => {
+      const editor = vscode.window.activeTextEditor;
+      const selected = editor?.document.getText(editor.selection) || '';
+      const cmd = selected.trim() || await vscode.window.showInputBox({ placeHolder: 'Enter a shell command to explain' });
+      if (!cmd) { return; }
+      chatPanel.prefill(`Explain what this shell command does, step by step, including flags and potential risks:\n\n${cmd}`);
+      chatPanel.show(vscode.ViewColumn.Beside);
+    })
   );
 
   // Commands
@@ -169,6 +303,74 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Inline edit: rewrite the current selection or file by instruction and preview a diff
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.inlineEdit', async (instructionArg?: string) => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showErrorMessage('Open a file to edit.');
+        return;
+      }
+      const instruction = instructionArg || await vscode.window.showInputBox({
+        placeHolder: 'Describe how to change the selected code (e.g., "convert to async/await")',
+        prompt: 'Inline Edit with AI',
+      });
+      if (!instruction) { return; }
+
+      const models = await client.listModels();
+      const chosen = await vscode.window.showQuickPick(models, { placeHolder: 'Select a model' });
+      if (!chosen) { return; }
+
+      const sel = editor.selection;
+      const hasSelection = !sel.isEmpty;
+      const original = hasSelection ? editor.document.getText(sel) : editor.document.getText();
+      const fileLang = editor.document.languageId;
+
+      const sys = `You are a precise code refactoring engine. Apply the user's instruction to the provided code. Output ONLY the updated code with no backticks and no explanation. Preserve formatting when possible. Language: ${fileLang}.`;
+      const prompt = `${sys}\n\nInstruction:\n${instruction}\n\nCode:\n${original}`;
+
+      let result = '';
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Applying edit with ${chosen}` },
+        async () => {
+          await client.generate(chosen, prompt, true, (t: string) => { result += t; });
+        }
+      );
+
+      // Build a WorkspaceEdit-style payload and open preview
+      const uriStr = editor.document.uri.toString();
+      const payload: any = { changes: [] as any[] };
+      if (hasSelection) {
+        payload.changes.push({
+          uri: uriStr,
+          range: {
+            start: { line: sel.start.line, character: sel.start.character },
+            end: { line: sel.end.line, character: sel.end.character },
+          },
+          newText: result,
+        });
+      } else {
+        payload.changes.push({ uri: uriStr, newText: result });
+      }
+      await vscode.commands.executeCommand('ollamaAgent.previewEdits', payload);
+    })
+  );
+
+  // Explain selection: stream explanation into the chat panel
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.explainSelection', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showInformationMessage('Open a file and select code to explain.');
+        return;
+      }
+      const selection = editor.document.getText(editor.selection) || editor.document.getText();
+      const pre = `Explain this code clearly and concisely. Include what it does, complexity, and potential pitfalls.\n\n`;
+      chatPanel.prefill(pre + selection);
+      chatPanel.show(vscode.ViewColumn.Beside);
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('ollamaAgent.applyWorkspaceEdit', async (payload: any) => {
       const cfg = vscode.workspace.getConfiguration('ollamaAgent');
@@ -181,9 +383,21 @@ export function activate(context: vscode.ExtensionContext) {
       if (!payload || !Array.isArray(payload.changes)) {
         return;
       }
+      const wsFolder = vscode.workspace.workspaceFolders?.[0];
+      function resolveUri(u: string): vscode.Uri {
+        try {
+          const parsed = vscode.Uri.parse(u);
+          if (parsed.scheme) { return parsed; }
+        } catch {}
+        if (wsFolder) {
+          return vscode.Uri.joinPath(wsFolder.uri, u.replace(/^\/+/, ''));
+        }
+        return vscode.Uri.file(u);
+      }
+
       const we = new vscode.WorkspaceEdit();
       for (const change of payload.changes) {
-        const uri = vscode.Uri.parse(change.uri);
+        const uri = resolveUri(change.uri);
         if (change.create) {
           we.createFile(uri, { ignoreIfExists: true });
         }
@@ -195,7 +409,22 @@ export function activate(context: vscode.ExtensionContext) {
             );
             we.replace(uri, r, change.newText);
           } else {
-            we.insert(uri, new vscode.Position(0, 0), change.newText);
+            // Replace entire file if range not provided
+            try {
+              const data = await vscode.workspace.fs.readFile(uri);
+              const content = Buffer.from(data).toString('utf8');
+              const lines = content.split(/\r?\n/);
+              const end = new vscode.Position(
+                Math.max(0, lines.length - 1),
+                Math.max(0, (lines[lines.length - 1] || '').length)
+              );
+              const full = new vscode.Range(new vscode.Position(0, 0), end);
+              we.replace(uri, full, change.newText);
+            } catch {
+              // If file doesn't exist, create and insert
+              we.createFile(uri, { ignoreIfExists: true });
+              we.insert(uri, new vscode.Position(0, 0), change.newText);
+            }
           }
         }
       }

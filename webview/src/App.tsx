@@ -177,27 +177,29 @@ export default function App() {
   if (loading) bubble.textContent = '';
     wrap.appendChild(bubble);
 
-    const actions = document.createElement('div');
-    actions.style.display = 'flex';
-    actions.style.gap = '6px';
-    actions.style.marginTop = '4px';
-
-    const insertBtn = document.createElement('button');
-    insertBtn.textContent = 'Insert at Cursor';
-    insertBtn.className = 'send';
-    insertBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'insertText', text: bubble.textContent || '' });
+    // Copy icon on the assistant bubble
+    const copyIcon = document.createElement('button');
+    copyIcon.className = 'copy-all';
+    copyIcon.title = 'Copy response';
+    copyIcon.setAttribute('aria-label', 'Copy response');
+    copyIcon.innerHTML = `
+      <svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    `;
+    copyIcon.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(bubble.textContent || '');
+        copyIcon.classList.add('copied');
+        setTimeout(() => copyIcon.classList.remove('copied'), 1200);
+      } catch {}
     });
-    const copyBtn = document.createElement('button');
-    copyBtn.textContent = 'Copy';
-    copyBtn.className = 'send';
-    copyBtn.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(bubble.textContent || ''); } catch {}
-    });
-
-    actions.appendChild(insertBtn);
-    actions.appendChild(copyBtn);
-    wrap.appendChild(actions);
+    bubble.appendChild(copyIcon);
 
     root.appendChild(wrap);
     root.scrollTop = root.scrollHeight;
@@ -401,6 +403,20 @@ export default function App() {
         </div>
         <span className="tag">{paused ? 'Paused' : status}{(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}</span>
         <span className="spacer" />
+        <div className="actions" title="Quick actions">
+          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainSelection' })}>Explain</button>
+          <button className="btn" onClick={() => {
+            const instr = window.prompt('Inline edit instruction (e.g., "add docs" or "convert to async/await")')?.trim();
+            if (instr) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.inlineEdit', args: [instr] });
+          }}>Edit</button>
+          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateTests' })}>Tests</button>
+          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.analyzeProblems' })}>Problems</button>
+          <button className="btn" onClick={() => vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.generateCommitMessage' })}>Commit</button>
+          <button className="btn" onClick={() => {
+            const cmd = window.prompt('Shell command to explain')?.trim();
+            if (cmd) vscode.postMessage({ type: 'runCommand', command: 'ollamaAgent.explainCommand' });
+          }}>Explain Cmd</button>
+        </div>
         {(sending || pending > 0) && (
           <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
         )}
@@ -635,18 +651,21 @@ function injectStyles() {
     }
 
     .bubble {
+      display: inline-block; /* shrink to content instead of full width */
       max-width: 90%;
       padding: 14px 16px;
       border-radius: 14px;
       line-height: 1.5;
       font-size: 14px;
       box-shadow: 0 0 8px rgba(255,255,255,0.05);
+      overflow-wrap: anywhere;
     }
 
     .assistant {
       background: linear-gradient(145deg, rgba(40,40,40,0.9), rgba(25,25,25,0.9));
       border: 1px solid rgba(255,255,255,0.08);
       align-self: flex-start;
+      position: relative;
     }
 
     .user {
@@ -660,6 +679,12 @@ function injectStyles() {
       font-size: 11px;
       opacity: 0.7;
     }
+
+    /* Tighter inner spacing in assistant/user bubbles */
+    .bubble p { margin: 0 0 8px; }
+    .bubble p:last-child { margin-bottom: 0; }
+
+    pre.code { max-width: 100%; margin: 8px 0; }
 
     /* Composer */
     .composer {
@@ -706,6 +731,26 @@ function injectStyles() {
       filter: brightness(1.1);
       transform: scale(1.03);
     }
+
+    .copy-all {
+      position: absolute;
+      top: 8px; right: 8px;
+      width: 28px; height: 28px;
+      display: inline-flex;
+      align-items: center; justify-content: center;
+      background: rgba(255,255,255,0.06);
+      color: #e6e6e6;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      cursor: pointer;
+      opacity: .85;
+      transition: all .2s ease;
+    }
+    .copy-all:hover { background: rgba(255,255,255,0.12); opacity: 1; }
+    .copy-all .icon-check { display: none; }
+    .copy-all.copied { color: #45c46b; transform: scale(1.05); }
+    .copy-all.copied .icon-copy { display: none; }
+    .copy-all.copied .icon-check { display: inline; }
 
     /* Effects */
     @keyframes fadeIn {
@@ -774,6 +819,8 @@ function injectStyles() {
       50% { margin-left: 50%; }
       100% { margin-left: 100%; }
     }
+
+    .actions { display:flex; gap:6px; align-items:center; }
   `;
   const el = document.createElement('style');
   el.textContent = css;
