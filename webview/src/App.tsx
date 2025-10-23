@@ -432,9 +432,9 @@ export default function App() {
           className="prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ask anything about your codebase..."
+          placeholder="Ask anything about your codebase... (Shift+Enter for newline)"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               send();
             }
