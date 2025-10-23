@@ -1,0 +1,101 @@
+{
+  "name": "ollama-agent",
+  "displayName": "ollama-agent",
+  "description": "A Vs-code extension for locally downloaded ollama models to convert them into ai -agent",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Ollama Agent",
+      "properties": {
+        "ollamaAgent.host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host where Ollama is running"
+        },
+        "ollamaAgent.port": {
+          "type": "number",
+          "default": 11434,
+          "description": "Port for Ollama HTTP API"
+        },
+        "ollamaAgent.systemPrompt": {
+          "type": "string",
+          "default": "You are a helpful coding assistant.",
+          "description": "System prompt for the assistant"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ollamaAgent.chat",
+        "title": "Ollama Agent: Open Chat"
+      },
+      {
+        "command": "ollamaAgent.askSelection",
+        "title": "Ollama Agent: Ask About Selection"
+      },
+      {
+        "command": "ollamaAgent.generateCode",
+        "title": "Ollama Agent: Generate Code Here"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ollamaAgent.askSelection",
+          "group": "navigation@99"
+        },
+        {
+          "command": "ollamaAgent.generateCode",
+          "group": "navigation@100"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "secondarySideBar": [
+        {
+          "id": "ollamaAgent",
+          "title": "Ollama",
+          "icon": "media/ollama.svg"
+        }
+      ]
+    },
+    "views": {
+      "ollamaAgent": [
+        {
+          "type": "webview",
+          "id": "ollamaAgent.chatView",
+          "name": "Chat",
+          "icon": "media/ollama.svg"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.105.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.32.0",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    

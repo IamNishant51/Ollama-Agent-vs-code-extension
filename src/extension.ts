@@ -1,0 +1,102 @@
+import * as vscode from 'vscode';
+import { OllamaClient } from './ollamaClient.js';
+import { OllamaChatViewProvider } from './chatView.js';
+
+let chatProvider: OllamaChatViewProvider | undefined;
+
+export function activate(context: vscode.ExtensionContext) {
+  const config = vscode.workspace.getConfiguration('ollamaAgent');
+  const host = config.get<string>('host', 'localhost');
+  const port = config.get<number>('port', 11434);
+  const systemPrompt = config.get<string>('systemPrompt', 'You are a helpful coding assistant.');
+
+  const client = new OllamaClient(host, port, systemPrompt);
+
+  chatProvider = new OllamaChatViewProvider(context.extensionUri, client);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(OllamaChatViewProvider.viewType, chatProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+
+  // Commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.chat', async () => {
+      await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
+      chatProvider?.reveal();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.askSelection', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showInformationMessage('Open a file and select code to ask about.');
+        return;
+      }
+      const selection = editor.document.getText(editor.selection) || editor.document.getText();
+      chatProvider?.prefill(`Please help with this code:\n\n${selection}`);
+      await vscode.commands.executeCommand('workbench.view.extension.ollamaAgent');
+      chatProvider?.reveal();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.generateCode', async () => {
+      const prompt = await vscode.window.showInputBox({ placeHolder: 'Describe the code to generate' });
+      if (!prompt) {
+        return;
+      }
+      const models = await client.listModels();
+      const chosen = await vscode.window.showQuickPick(models, { placeHolder: 'Select a model' });
+      if (!chosen) {
+        return;
+      }
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showErrorMessage('No active editor to insert code.');
+        return;
+      }
+      const chunks: string[] = [];
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Generating with ${chosen}` },
+        async () => {
+          await client.generate(chosen, prompt, true, (t: string) => chunks.push(t));
+        }
+      );
+      await editor.edit((edit) => {
+        edit.insert(editor.selection.active, chunks.join(''));
+      });
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.applyWorkspaceEdit', async (payload: any) => {
+      // payload: { changes: Array<{ uri: string, range?: { start: {line:number, character:number}, end:{line:number, character:number}}, newText?: string, create?: boolean }> }
+      if (!payload || !Array.isArray(payload.changes)) {
+        return;
+      }
+      const we = new vscode.WorkspaceEdit();
+      for (const change of payload.changes) {
+        const uri = vscode.Uri.parse(change.uri);
+        if (change.create) {
+          we.createFile(uri, { ignoreIfExists: true });
+        }
+        if (typeof change.newText === 'string') {
+          if (change.range) {
+            const r = new vscode.Range(
+              new vscode.Position(change.range.start.line, change.range.start.character),
+              new vscode.Position(change.range.end.line, change.range.end.character)
+            );
+            we.replace(uri, r, change.newText);
+          } else {
+            we.insert(uri, new vscode.Position(0, 0), change.newText);
+          }
+        }
+      }
+      await vscode.workspace.applyEdit(we);
+    })
+  );
+}
+
+export function deactivate() {}
