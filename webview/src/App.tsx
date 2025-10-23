@@ -13,6 +13,13 @@ type ChatEvent =
   | { type: 'error'; message: string }
   | { type: 'chatError'; model: string; message: string };
 
+type Thread = {
+  id: string;
+  title: string;
+  html: string; // snapshot of the chat area
+  createdAt: number;
+};
+
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>('');
@@ -22,10 +29,31 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [useChat, setUseChat] = useState(true);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [currentId, setCurrentId] = useState<string>('');
+  const [historyOpen, setHistoryOpen] = useState<boolean>(true);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     injectStyles();
+    // Restore webview state (threads and current thread)
+    try {
+      const state = vscode.getState?.() || {};
+      if (state && Array.isArray(state.threads)) {
+        setThreads(state.threads);
+        setCurrentId(state.currentId || (state.threads[0]?.id || ''));
+        // Load the current thread HTML into the content area
+        setTimeout(() => {
+          const t = (state.threads || []).find((x: Thread) => x.id === (state.currentId || ''));
+          if (t && contentRef.current) contentRef.current.innerHTML = t.html || '';
+        }, 0);
+      } else {
+        // initialize with a fresh thread
+        const t = createNewThread();
+        setThreads([t]);
+        setCurrentId(t.id);
+      }
+    } catch {}
     const onMessage = (ev: MessageEvent<ChatEvent>) => {
       const msg = ev.data;
       switch (msg.type) {
@@ -57,6 +85,7 @@ export default function App() {
             return np;
           });
           finalizeLastAssistant();
+          saveSnapshot();
           break;
         case 'error':
         case 'chatError':
@@ -64,6 +93,7 @@ export default function App() {
           setPending(0);
           setStatus('Error');
           appendAssistant(`Error: ${'message' in msg ? msg.message : ''}`);
+          saveSnapshot();
           break;
       }
     };
@@ -93,6 +123,13 @@ export default function App() {
     wrap.appendChild(bubble);
     root.appendChild(wrap);
     root.scrollTop = root.scrollHeight;
+    // Title the thread if it's new/default
+    const t = getCurrentThread();
+    if (t && (t.title === 'New chat' || !t.title)) {
+      const title = deriveTitle(text);
+      updateThread(t.id, { title });
+    }
+    saveSnapshot();
   }
 
   let lastAssistant: HTMLDivElement | null = null;
@@ -190,6 +227,72 @@ export default function App() {
     });
   }
 
+  function deriveTitle(text: string) {
+    const words = text.trim().split(/\s+/).slice(0, 8).join(' ');
+    return words || 'New chat';
+  }
+
+  function createNewThread(): Thread {
+    return { id: String(Date.now()) + Math.random().toString(36).slice(2), title: 'New chat', html: '', createdAt: Date.now() };
+  }
+
+  function getCurrentThread(): Thread | undefined {
+    return threads.find((t) => t.id === currentId);
+  }
+
+  function updateThread(id: string, patch: Partial<Thread>) {
+    setThreads((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      persistState(next, currentId);
+      return next;
+    });
+  }
+
+  function saveSnapshot() {
+    const t = getCurrentThread();
+    if (!t || !contentRef.current) return;
+    const html = contentRef.current.innerHTML || '';
+    updateThread(t.id, { html });
+  }
+
+  function switchThread(id: string) {
+    // Save current before switching
+    saveSnapshot();
+    setCurrentId(id);
+    const t = threads.find((x) => x.id === id);
+    if (t && contentRef.current) {
+      contentRef.current.innerHTML = t.html || '';
+    }
+    persistState(threads, id);
+  }
+
+  function newChat() {
+    // Save current, then create a new one and switch
+    saveSnapshot();
+    const t = createNewThread();
+    const next = [t, ...threads];
+    setThreads(next);
+    setCurrentId(t.id);
+    if (contentRef.current) contentRef.current.innerHTML = '';
+    persistState(next, t.id);
+  }
+
+  function deleteThread(id: string) {
+    const next = threads.filter((t) => t.id !== id);
+    let nextId = currentId;
+    if (id === currentId) {
+      nextId = next[0]?.id || '';
+      if (contentRef.current) contentRef.current.innerHTML = next.find((x) => x.id === nextId)?.html || '';
+    }
+    setThreads(next);
+    setCurrentId(nextId);
+    persistState(next, nextId);
+  }
+
+  function persistState(thrs: Thread[], id: string) {
+    try { vscode.setState?.({ threads: thrs, currentId: id }); } catch {}
+  }
+
   const styles = useMemo(() => ({
     container: {
       fontFamily: 'var(--vscode-font-family)',
@@ -199,28 +302,57 @@ export default function App() {
 
   return (
     <div className="panel" style={styles.container}>
-  {(sending || pending > 0) && <div className="progress" aria-hidden="true" />}
+      {(sending || pending > 0) && <div className="progress" aria-hidden="true" />}
       <div className="toolbar">
+        <button className="icon" title={historyOpen ? 'Hide history' : 'Show history'} onClick={() => setHistoryOpen((v) => !v)}>☰</button>
         <span className="title">Ollama</span>
-        <select
-          className="select"
-          value={selected}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          {models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <div className="model">
+          <span className="model-label">Model</span>
+          <div className="select-wrap">
+            <select
+              className="select"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              disabled={models.length === 0}
+            >
+              {models.length === 0 ? (
+                <option value="">No models</option>
+              ) : (
+                models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+        </div>
         <span className="tag">{status}{status === 'Streaming' ? <span className="dot-pulse" /> : null}</span>
         <span className="spacer" />
+        <button className="btn secondary" onClick={newChat}>New Chat</button>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
         </label>
       </div>
-      <div id="content" ref={contentRef} className="content" aria-live="polite" />
-      <div className="composer">
+      <div className={`layout ${historyOpen ? 'with-history' : ''}`}>
+        <aside className="history" aria-label="Conversations">
+          <div className="history-header">
+            <span>History</span>
+            <button className="icon" title="New chat" onClick={newChat}>＋</button>
+          </div>
+          <div className="history-list">
+            {threads.map((t) => (
+              <div key={t.id} className={`history-item ${t.id === currentId ? 'active' : ''}`}>
+                <button className="history-title" onClick={() => switchThread(t.id)} title={t.title}>{t.title || 'New chat'}</button>
+                <button className="icon del" title="Delete" onClick={() => deleteThread(t.id)}>✕</button>
+              </div>
+            ))}
+            {threads.length === 0 && <div className="history-empty">No conversations yet</div>}
+          </div>
+        </aside>
+        <main className="chat">
+          <div id="content" ref={contentRef} className="content" aria-live="polite" />
+          <div className="composer">
         <textarea
           className="prompt"
           value={prompt}
@@ -236,50 +368,327 @@ export default function App() {
         <button className="send" onClick={send} disabled={sending || pending > 0}>
           {sending ? <><span className="spinner" /> Sending…</> : (pending > 0 ? <><span className="spinner" /> Generating…</> : 'Send')}
         </button>
+          </div>
+        </main>
       </div>
     </div>
   );
 }
-
 function injectStyles() {
   const css = `
     :root { color-scheme: dark; }
-    body { font-family: var(--vscode-font-family); margin: 0; color: var(--vscode-foreground); background: var(--vscode-editor-background); display:flex; height:100vh; }
-    .panel { display:flex; flex-direction:column; width:100%; }
-    .toolbar { display:flex; gap:8px; align-items:center; padding:10px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); position:sticky; top:0; z-index:2; }
-    .toolbar .title { font-weight:600; }
-    .select { min-width: 220px; }
-    .content { flex:1; overflow:auto; padding: 16px; display:flex; flex-direction:column; gap:14px; }
-    .composer { display:flex; gap:8px; padding:8px; border-top:1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); }
-    .prompt { flex:1; min-height: 64px; resize: vertical; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius:6px; padding:8px; }
-    .send { width:auto; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius:6px; padding:8px 12px; }
-    .send:disabled { opacity:.8; }
-    .bubble { max-width: 90%; padding:12px 14px; border-radius:12px; line-height:1.5; }
-    .assistant { background: color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent); border: 1px solid var(--vscode-input-border); align-self:flex-start; box-shadow: 0 1px 0 rgba(0,0,0,.2); }
-    .user { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); align-self:flex-end; }
-    .meta { font-size: 11px; opacity: .8; margin-bottom: 4px; }
-    .msg { display:flex; flex-direction:column; gap:4px; }
-    .code { position: relative; background: var(--vscode-editor-background); border: 1px solid var(--vscode-input-border); border-radius:8px; padding:12px; font-family: var(--vscode-editor-font-family); overflow:auto; }
-    .copy-code { position:absolute; top:8px; right:8px; font-size: 11px; padding:4px 8px; border:none; border-radius:4px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor:pointer; }
-    .copy-code:hover { filter: brightness(1.1); }
-    code.inline { padding: 2px 4px; background: color-mix(in srgb, var(--vscode-editor-foreground) 15%, transparent); border-radius: 4px; }
-    .tag { display:inline-flex; align-items:center; gap:6px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 999px; padding: 2px 8px; font-size: 11px; }
-    .dot-pulse { width: 6px; height: 6px; background: var(--vscode-badge-foreground); border-radius: 50%; display:inline-block; animation: pulse 1s infinite ease-in-out; }
-    @keyframes pulse { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 1; transform: scale(1.25); } }
-    .spinner { width: 14px; height: 14px; border: 2px solid transparent; border-top-color: var(--vscode-button-foreground); border-radius: 50%; display:inline-block; animation: spin .8s linear infinite; }
-    @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
-    .bubble.loading { position: relative; }
-    .bubble.loading::after { content: ''; display:inline-block; width: 28px; height: 8px; background:
-      radial-gradient(circle 2px, var(--vscode-foreground) 60%, transparent 61%) 0% 50%/8px 8px,
-      radial-gradient(circle 2px, var(--vscode-foreground) 60%, transparent 61%) 50% 50%/8px 8px,
-      radial-gradient(circle 2px, var(--vscode-foreground) 60%, transparent 61%) 100% 50%/8px 8px;
-      animation: typing 1.2s infinite ease-in-out; opacity:.7; }
-    @keyframes typing { 0% { transform: translateX(-8px); } 50% { transform: translateX(0); } 100% { transform: translateX(-8px); } }
-    .progress { position: sticky; top: 0; height: 2px; background: transparent; overflow: hidden; }
-    .progress::before { content: ''; display:block; height:100%; width: 30%; background: var(--vscode-progressBar-background, var(--vscode-button-background)); animation: indet 1.2s infinite; }
-    @keyframes indet { 0% { margin-left: -30%; } 50% { margin-left: 50%; } 100% { margin-left: 100%; } }
-    @media (max-width: 900px) { .toolbar { flex-wrap: wrap; } .select { min-width: 140px; } }
-    .spacer { flex:1; }
+    body {
+      font-family: Inter, 'Segoe UI', sans-serif;
+      margin: 0;
+      color: #e6e6e6;
+      background: #0e0e0e;
+      display: flex;
+      height: 100vh;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      backdrop-filter: blur(12px);
+      background: rgba(20, 20, 20, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(20, 20, 20, 0.75);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      backdrop-filter: blur(14px);
+    }
+
+    .toolbar .title {
+      font-weight: 600;
+      font-size: 15px;
+      color: #ffffff;
+    }
+
+    .icon, .btn, .send {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #e6e6e6;
+      border-radius: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+
+    .icon:hover, .btn:hover, .send:hover {
+      background: rgba(255,255,255,0.1);
+      transform: scale(1.05);
+    }
+
+    .btn.secondary {
+      background: rgba(255,255,255,0.1);
+      color: #ffffff;
+      font-weight: 500;
+    }
+
+    .model { display:flex; align-items:center; gap:8px; }
+    .model-label { font-size: 12px; opacity:.85; }
+    .select-wrap { position: relative; }
+    .select {
+      min-width: 200px;
+      background: rgba(30,30,30,0.9);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #e6e6e6;
+      border-radius: 999px;
+      padding: 8px 34px 8px 12px;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+    }
+    .select-wrap::after {
+      content: '\u25BC'; /* down caret */
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 10px; opacity: .8; pointer-events: none;
+    }
+
+    /* Layout */
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 0;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .layout:not(.with-history) { grid-template-columns: 0 1fr; }
+
+    /* Sidebar */
+    .history {
+      overflow-y: auto;
+      border-right: 1px solid rgba(255,255,255,0.08);
+      background: rgba(15, 15, 15, 0.7);
+      backdrop-filter: blur(12px);
+      transition: all 0.3s ease;
+    }
+
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .history-list {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .history-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255,255,255,0.03);
+      transition: all 0.25s ease;
+    }
+
+    .history-item:hover {
+      background: rgba(255,255,255,0.06);
+      transform: scale(1.01);
+    }
+
+    .history-item.active {
+      border-color: rgba(255,255,255,0.25);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .history-title {
+      background: transparent;
+      border: none;
+      color: #e6e6e6;
+      flex: 1;
+      text-align: left;
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Chat */
+    .chat {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: rgba(18,18,18,0.7);
+      backdrop-filter: blur(14px);
+    }
+
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    /* Messages */
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      animation: fadeIn 0.3s ease forwards;
+    }
+
+    .bubble {
+      max-width: 90%;
+      padding: 14px 16px;
+      border-radius: 14px;
+      line-height: 1.5;
+      font-size: 14px;
+      box-shadow: 0 0 8px rgba(255,255,255,0.05);
+    }
+
+    .assistant {
+      background: linear-gradient(145deg, rgba(40,40,40,0.9), rgba(25,25,25,0.9));
+      border: 1px solid rgba(255,255,255,0.08);
+      align-self: flex-start;
+    }
+
+    .user {
+      background: linear-gradient(145deg, #1a73e8, #1559b3);
+      color: white;
+      align-self: flex-end;
+      border: none;
+    }
+
+    .meta {
+      font-size: 11px;
+      opacity: 0.7;
+    }
+
+    /* Composer */
+    .composer {
+      position: sticky;
+      bottom: 0;
+      background: rgba(20,20,20,0.85);
+      backdrop-filter: blur(12px);
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding: 10px 14px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .prompt {
+      flex: 1;
+      min-height: 60px;
+      resize: none;
+      background: rgba(255,255,255,0.05);
+      color: #e6e6e6;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .prompt:focus {
+      border-color: rgba(255,255,255,0.3);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .send {
+      border-radius: 10px;
+      font-weight: 500;
+      padding: 10px 18px;
+      background: linear-gradient(135deg, #1a73e8, #1559b3);
+      color: white;
+      border: none;
+    }
+
+    .send:hover {
+      filter: brightness(1.1);
+      transform: scale(1.03);
+    }
+
+    /* Effects */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+
+    .dot-pulse {
+      width: 6px; height: 6px;
+      background: #1a73e8;
+      border-radius: 50%;
+      animation: pulse 1s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%,100% { opacity: .4; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.3); }
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 0 1fr;
+      }
+      .layout.with-history {
+        grid-template-columns: min(70vw, 240px) 1fr;
+      }
+      .toolbar {
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .model { width: 100%; }
+      .select { min-width: 0; width: 100%; }
+    }
+
+    .progress {
+      position: sticky;
+      top: 0;
+      height: 2px;
+      background: transparent;
+      overflow: hidden;
+    }
+
+    .progress::before {
+      content: '';
+      display: block;
+      height: 100%;
+      width: 30%;
+      background: #1a73e8;
+      animation: indet 1.2s infinite;
+    }
+
+    @keyframes indet {
+      0% { margin-left: -30%; }
+      50% { margin-left: 50%; }
+      100% { margin-left: 100%; }
+    }
   `;
   const el = document.createElement('style');
   el.textContent = css;
