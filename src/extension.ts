@@ -39,6 +39,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   const client = new OllamaClient(host, port, systemPrompt);
 
+  // Create status bar item for quick access (like Copilot)
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = 'ollamaAgent.chat';
+  statusBarItem.text = '$(comment-discussion) Ollama';
+  statusBarItem.tooltip = 'Open Ollama Agent Chat';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
   chatProvider = new OllamaChatViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(OllamaChatViewProvider.viewType, chatProvider, {

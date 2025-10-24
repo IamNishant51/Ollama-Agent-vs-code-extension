@@ -68,6 +68,13 @@ function activate(context) {
     const port = config.get('port', 11434);
     const systemPrompt = config.get('systemPrompt', 'You are a helpful coding assistant.');
     const client = new ollamaClient_js_1.OllamaClient(host, port, systemPrompt);
+    // Create status bar item for quick access (like Copilot)
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    statusBarItem.command = 'ollamaAgent.chat';
+    statusBarItem.text = '$(comment-discussion) Ollama';
+    statusBarItem.tooltip = 'Open Ollama Agent Chat';
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
     chatProvider = new chatView_js_1.OllamaChatViewProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(chatView_js_1.OllamaChatViewProvider.viewType, chatProvider, {
         webviewOptions: { retainContextWhenHidden: true }
