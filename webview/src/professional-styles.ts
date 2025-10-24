@@ -2,16 +2,16 @@
 export const professionalStyles = `
   /* === CORE RESET & BASE === */
   :root {
-    --color-bg-primary: #1e1e1e;
-    --color-bg-secondary: #252526;
-    --color-bg-tertiary: #2d2d30;
-    --color-border: #3e3e42;
-    --color-border-subtle: rgba(255, 255, 255, 0.08);
-    --color-text-primary: #cccccc;
+    --color-bg-primary: #181818;
+    --color-bg-secondary: #1f1f1f;
+    --color-bg-tertiary: #252525;
+    --color-border: #2b2b2b;
+    --color-border-subtle: rgba(255, 255, 255, 0.06);
+    --color-text-primary: #d4d4d4;
     --color-text-secondary: #858585;
     --color-text-muted: #6a6a6a;
-    --color-accent: #007acc;
-    --color-accent-hover: #1a8ad1;
+    --color-accent: #0078d4;
+    --color-accent-hover: #1183de;
     --color-success: #89d185;
     --color-error: #f48771;
     --color-warning: #cca700;
@@ -28,11 +28,14 @@ export const professionalStyles = `
     
     --font-size-xs: 11px;
     --font-size-sm: 12px;
-    --font-size-md: 13px;
-    --font-size-lg: 14px;
+  --font-size-md: 14px;
+  --font-size-lg: 15px;
     
     --transition-fast: 0.1s ease;
     --transition-normal: 0.2s ease;
+    --spacing-message: 20px;
+    --spacing-bubble-y: 16px;
+    --spacing-bubble-x: 20px;
   }
 
   * {
@@ -49,7 +52,7 @@ export const professionalStyles = `
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
     font-size: var(--font-size-md);
-    line-height: 1.6;
+    line-height: 1.7;
     color: var(--color-text-primary);
     background: var(--color-bg-primary);
     -webkit-font-smoothing: antialiased;
@@ -74,7 +77,7 @@ export const professionalStyles = `
     padding: var(--spacing-sm) var(--spacing-lg);
     background: var(--color-bg-secondary);
     border-bottom: 1px solid var(--color-border-subtle);
-    min-height: 40px;
+    min-height: 44px;
     flex-shrink: 0;
   }
 
@@ -133,6 +136,14 @@ export const professionalStyles = `
     padding: 6px;
     min-width: 32px;
     min-height: 32px;
+  }
+
+  .btn .btn-icon svg,
+  .icon svg,
+  .close-btn svg {
+    width: 16px;
+    height: 16px;
+    display: block;
   }
 
   /* === MODEL SELECT === */
@@ -334,6 +345,12 @@ export const professionalStyles = `
     border-radius: 999px;
   }
 
+  .tag.stopped {
+    color: var(--color-error);
+    border-color: var(--color-error);
+    background: rgba(244, 135, 113, 0.1);
+  }
+
   .dot-pulse {
     display: inline-block;
     width: 6px;
@@ -348,12 +365,12 @@ export const professionalStyles = `
     50% { opacity: 1; }
   }
 
-  /* === MESSAGES === */
+  /* === MESSAGES (Flat, Copilot style) === */
   .msg {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
-    margin-bottom: var(--spacing-lg);
+    gap: 6px;
+    margin-bottom: var(--spacing-message);
   }
 
   .meta {
@@ -367,27 +384,31 @@ export const professionalStyles = `
 
   .bubble {
     position: relative;
-    max-width: 85%;
-    padding: var(--spacing-md) var(--spacing-lg);
+    max-width: 100%;
+    padding: 0;
     font-size: var(--font-size-md);
-    line-height: 1.6;
-    border-radius: var(--radius-lg);
+    line-height: 1.7;
+    border-radius: 0;
     word-wrap: break-word;
     overflow-wrap: break-word;
+    color: var(--color-text-primary);
   }
 
   .bubble.user {
-    align-self: flex-end;
-    background: var(--color-accent);
-    color: white;
-    margin-left: auto;
+    align-self: flex-start;
+    background: transparent;
+    color: var(--color-text-primary);
+    margin: 0;
+    padding: 8px 0;
+    font-weight: 600;
   }
 
   .bubble.assistant {
     align-self: flex-start;
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-subtle);
+    background: transparent;
+    border: none;
     color: var(--color-text-primary);
+    padding: 12px 0;
   }
 
   /* === COPY BUTTON === */
@@ -440,7 +461,7 @@ export const professionalStyles = `
   .code-block {
     position: relative;
     margin: var(--spacing-md) 0;
-    background: #1a1a1a;
+    background: #0d0d0d;
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
     overflow: hidden;
@@ -464,7 +485,9 @@ export const professionalStyles = `
     letter-spacing: 0.5px;
   }
 
-  .copy-code-btn {
+  .copy-code-btn,
+  .insert-code-btn,
+  .apply-code-btn {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -478,7 +501,9 @@ export const professionalStyles = `
     transition: all var(--transition-fast);
   }
 
-  .copy-code-btn:hover {
+  .copy-code-btn:hover,
+  .insert-code-btn:hover,
+  .apply-code-btn:hover {
     color: var(--color-text-primary);
     background: rgba(255, 255, 255, 0.05);
     border-color: var(--color-border);
@@ -492,8 +517,8 @@ export const professionalStyles = `
     margin: 0;
     padding: var(--spacing-md);
     overflow-x: auto;
-    font-size: var(--font-size-sm);
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.7;
   }
 
   .code-block code {

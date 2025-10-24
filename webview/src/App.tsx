@@ -62,7 +62,7 @@ export default function App() {
   const [selected, setSelected] = useState<string>('');
   const [selected2, setSelected2] = useState<string>(''); // Second model for combine mode
   const [prompt, setPrompt] = useState('');
-  const [status, setStatus] = useState<'Ready' | 'Streaming' | 'Error'>('Ready');
+  const [status, setStatus] = useState<'Ready' | 'Streaming' | 'Error' | 'Stopped'>('Ready');
   const [paused, setPaused] = useState(false);
   const [pending, setPending] = useState(0);
   const [sending, setSending] = useState(false);
@@ -234,7 +234,7 @@ export default function App() {
     // Update local state optimistically
     setSending(false);
     setPaused(false);
-    setStatus('Ready');
+    setStatus('Stopped');
     setPending(0);
   }
 
@@ -440,30 +440,52 @@ export default function App() {
       header.className = 'code-header';
       header.innerHTML = `<span class="code-lang">${lang}</span>`;
       
-      const btn = document.createElement('button');
-      btn.className = 'copy-code-btn';
-      btn.innerHTML = `
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-code-btn';
+      copyBtn.innerHTML = `
         <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
         </svg>
         <span class="copy-text">Copy</span>
       `;
-      btn.addEventListener('click', async () => {
+      copyBtn.addEventListener('click', async () => {
         const codeEl = pre.querySelector('code');
         const code = codeEl?.textContent || '';
         try { 
           await navigator.clipboard.writeText(code);
-          btn.classList.add('copied');
-          const textEl = btn.querySelector('.copy-text');
+          copyBtn.classList.add('copied');
+          const textEl = copyBtn.querySelector('.copy-text');
           if (textEl) textEl.textContent = 'Copied!';
           setTimeout(() => {
-            btn.classList.remove('copied');
+            copyBtn.classList.remove('copied');
             if (textEl) textEl.textContent = 'Copy';
           }, 2000);
         } catch {}
       });
-      header.appendChild(btn);
+      header.appendChild(copyBtn);
+
+      const insertBtn = document.createElement('button');
+      insertBtn.className = 'insert-code-btn';
+      insertBtn.textContent = 'Insert';
+      insertBtn.title = 'Insert at cursor';
+      insertBtn.addEventListener('click', () => {
+        const codeEl = pre.querySelector('code');
+        const code = codeEl?.textContent || '';
+        try { vscode.postMessage({ type: 'insertText', text: code }); } catch {}
+      });
+      header.appendChild(insertBtn);
+
+      const applyBtn = document.createElement('button');
+      applyBtn.className = 'apply-code-btn';
+      applyBtn.textContent = 'Apply';
+      applyBtn.title = 'Apply (replace selection)';
+      applyBtn.addEventListener('click', () => {
+        const codeEl = pre.querySelector('code');
+        const code = codeEl?.textContent || '';
+        try { vscode.postMessage({ type: 'applyCode', text: code }); } catch {}
+      });
+      header.appendChild(applyBtn);
       pre.insertBefore(header, pre.firstChild);
     });
 
@@ -658,10 +680,20 @@ export default function App() {
             </div>
           </div>
         )}
-        <span className="tag">{paused ? 'Paused' : status}{(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}</span>
+        <span className={`tag ${status === 'Stopped' ? 'stopped' : ''}`}>
+          {paused ? 'Paused' : status}
+          {(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}
+        </span>
         <span className="spacer" />
         <button className="btn" onClick={() => setShowReadme((v) => !v)}>
-          📄 README
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M4 4v15.5"/>
+              <path d="M8 4h12v13H6.5A2.5 2.5 0 0 0 4 19.5"/>
+            </svg>
+          </span>
+          <span className="btn-text">README</span>
         </button>
         {(sending || pending > 0) && (
           <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
@@ -671,20 +703,44 @@ export default function App() {
           onClick={() => toggleMode('combine')}
           title="Combine two AI models for better responses"
         >
-          <span className="btn-icon">🔀</span>
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 3h5v5"/>
+              <path d="M8 21H3v-5"/>
+              <path d="M21 3 14.5 9.5"/>
+              <path d="M3 21 9.5 14.5"/>
+            </svg>
+          </span>
           <span className="btn-text">Combine Mode</span>
         </button>
         <button className="btn secondary" onClick={newChat}>
-          <span className="btn-icon">＋</span>
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14"/>
+              <path d="M5 12h14"/>
+            </svg>
+          </span>
           <span className="btn-text">New Chat</span>
         </button>
         <div className="mode-toggle">
           <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} onClick={() => toggleMode('read')}>
-            <span className="btn-icon">📖</span>
+            <span className="btn-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 7a4 4 0 0 1 4-4h6v18H6a4 4 0 0 1-4-4Z"/>
+                <path d="M22 7a4 4 0 0 0-4-4h-6v18h6a4 4 0 0 0 4-4Z"/>
+              </svg>
+            </span>
             <span className="btn-text">Read</span>
           </button>
           <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} onClick={() => toggleMode('agent')}>
-            <span className="btn-icon">🤖</span>
+            <span className="btn-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="10" rx="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                <path d="M8 15h0"/>
+                <path d="M16 15h0"/>
+              </svg>
+            </span>
             <span className="btn-text">Agent</span>
           </button>
         </div>
@@ -696,13 +752,26 @@ export default function App() {
         <aside className="history" aria-label="Conversations">
           <div className="history-header">
             <span>History</span>
-            <button className="icon" title="New chat" onClick={newChat}>＋</button>
+            <button className="icon" title="New chat" onClick={newChat} aria-label="New chat">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14"/>
+                <path d="M5 12h14"/>
+              </svg>
+            </button>
           </div>
           <div className="history-list">
             {threads.map((t) => (
               <div key={t.id} className={`history-item ${t.id === currentId ? 'active' : ''}`}>
                 <button className="history-title" onClick={() => switchThread(t.id)} title={t.title}>{t.title || 'New chat'}</button>
-                <button className="icon del" title="Delete" onClick={() => deleteThread(t.id)}>✕</button>
+                <button className="icon del" title="Delete" aria-label="Delete" onClick={() => deleteThread(t.id)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                    <path d="M10 11v6"/>
+                    <path d="M14 11v6"/>
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                  </svg>
+                </button>
               </div>
             ))}
             {threads.length === 0 && <div className="history-empty">No conversations yet</div>}
@@ -743,12 +812,17 @@ export default function App() {
           {showReadme && (
             <div className="readme-form">
               <div className="readme-header">
-                <h3>📄 Generate README</h3>
-                <button className="close-btn" onClick={() => setShowReadme(false)} title="Close">✕</button>
+                <h3>Generate README</h3>
+                <button className="close-btn" onClick={() => setShowReadme(false)} title="Close" aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 6 6 18"/>
+                    <path d="M6 6l12 12"/>
+                  </svg>
+                </button>
               </div>
               <div className="readme-options">
                 <label className="readme-field">
-                  <span className="field-label">📝 Style</span>
+                  <span className="field-label">Style</span>
                   <select value={readmeStyle} onChange={(e) => setReadmeStyle(e.target.value)}>
                     <option>General</option>
                     <option>Technical (Functionality/API)</option>
@@ -759,7 +833,7 @@ export default function App() {
                   </select>
                 </label>
                 <label className="readme-field">
-                  <span className="field-label">🎯 Placement</span>
+                  <span className="field-label">Placement</span>
                   <select value={readmePlacement} onChange={(e) => setReadmePlacement(e.target.value)}>
                     <option>GitHub</option>
                     <option>VS Code Marketplace</option>
@@ -769,18 +843,18 @@ export default function App() {
                 </label>
                 <label className="readme-checkbox">
                   <input type="checkbox" checked={readmeDeep} onChange={(e) => setReadmeDeep(e.target.checked)} />
-                  <span>🔍 Deep scan codebase (slower but more detailed)</span>
+                  <span>Deep scan codebase (slower but more detailed)</span>
                 </label>
               </div>
               <textarea
                 className="readme-notes"
-                placeholder="✨ Additional notes: highlight key features, target audience, add badges, mention license, special instructions..."
+                placeholder="Additional notes: highlight key features, target audience, add badges, mention license, special instructions..."
                 value={readmeNotes}
                 onChange={(e) => setReadmeNotes(e.target.value)}
               />
               <div className="readme-actions">
                 <button className="send" onClick={submitReadme}>
-                  <span>✨ Generate README</span>
+                  <span>Generate README</span>
                 </button>
                 <button className="btn" onClick={() => setShowReadme(false)}>Cancel</button>
               </div>

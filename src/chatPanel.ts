@@ -351,6 +351,26 @@ ${snapshot}`;
           }
           break;
         }
+        case 'applyCode': {
+          const text: string = msg.text || '';
+          const editor = vscode.window.activeTextEditor;
+          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const mode = cfg.get<string>('mode', 'read');
+          if (mode !== 'agent') {
+            vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply changes.');
+            break;
+          }
+          if (editor && text) {
+            await editor.edit((ed) => {
+              if (!editor.selection.isEmpty) {
+                ed.replace(editor.selection, text);
+              } else {
+                ed.insert(editor.selection.active, text);
+              }
+            });
+          }
+          break;
+        }
         case 'applyEdits': {
           const cfg = vscode.workspace.getConfiguration('ollamaAgent');
           const mode = cfg.get<string>('mode', 'read');
@@ -500,7 +520,7 @@ ${snapshot}`;
       
       // Step 1: Read the file first
       this.panel?.webview.postMessage({ type: 'chatStart', model });
-      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `📖 Reading ${targetFile}...\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Reading ${targetFile}...\n\n` });
       
       let fileContent = '';
       try {
@@ -513,13 +533,13 @@ ${snapshot}`;
       }
       
       // Step 2: Ask AI to generate the modified version
-      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `🤖 Generating modified version...\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Generating modified version...\n\n` });
       
       // Special handling: if user wants to remove ALL code, just write empty file
       const wantsEmpty = /remove\s+all|delete\s+all|clear\s+all|empty/i.test(prompt);
       
       if (wantsEmpty) {
-        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `💾 Clearing ${targetFile}...\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Clearing ${targetFile}...\n\n` });
         
         await this.executeTool({ 
           cmd: 'writeFile', 
@@ -527,7 +547,7 @@ ${snapshot}`;
           content: '// File cleared by user request\n' 
         });
         
-        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully cleared ${targetFile}!\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully cleared ${targetFile}!\n\n` });
         this.panel?.webview.postMessage({ type: 'chatDone', model });
         
         // Open the file to show it's empty
@@ -589,7 +609,7 @@ MODIFIED CODE:`;
         modifiedContent = modifiedContent.trim();
         
         // Step 3: Write the modified file
-        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `💾 Writing changes to ${targetFile}...\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Writing changes to ${targetFile}...\n\n` });
         
         await this.executeTool({ 
           cmd: 'writeFile', 
@@ -597,7 +617,7 @@ MODIFIED CODE:`;
           content: modifiedContent 
         });
         
-        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully modified ${targetFile}!\n\n` });
+  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
         this.panel?.webview.postMessage({ type: 'chatDone', model });
         
         // Open the file to show the changes
