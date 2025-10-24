@@ -9,6 +9,7 @@ export class OllamaChatPanel {
   private currentPrompt: string | undefined;
   private currentUseChat: boolean = true;
   private isPaused = false;
+  private wasStopped = false;
   private abortedForTool = false;
   private assistantBuffer = '';
   private convo: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
@@ -61,6 +62,7 @@ export class OllamaChatPanel {
           // Clear current prompt so resume cannot continue
           this.currentPrompt = undefined;
           this.isPaused = false;
+          this.wasStopped = true;
           // Notify webview that chat is done/stopped
           this.panel?.webview.postMessage({ type: 'chatDone', model: this.currentModel });
           break;
@@ -187,6 +189,7 @@ ${snapshot}`;
           if (!models.length || !prompt) {
             return;
           }
+          this.wasStopped = false;
           // If there are attached files, read them and prepend to the prompt
           if (attachedFiles.length > 0) {
             const ws = vscode.workspace.workspaceFolders?.[0];
@@ -287,7 +290,7 @@ ${snapshot}`;
             }
             this.panel?.webview.postMessage({ type: 'chatDone', model: m });
           } catch (e: any) {
-            if (this.isPaused) {
+            if (this.isPaused || this.wasStopped) {
               // Swallow abort error
             } else {
               this.panel?.webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
@@ -309,6 +312,7 @@ ${snapshot}`;
           const m = this.currentModel;
           const useChat = this.currentUseChat;
           this.isPaused = false;
+          this.wasStopped = false;
           this.controller = new AbortController();
           this.panel?.webview.postMessage({ type: 'chatResume', model: m });
           try {
@@ -325,7 +329,7 @@ ${snapshot}`;
             }
             this.panel?.webview.postMessage({ type: 'chatDone', model: m });
           } catch (e: any) {
-            if (this.isPaused) {
+            if (this.isPaused || this.wasStopped) {
               // ignore
             } else {
               this.panel?.webview.postMessage({ type: 'chatError', model: m, message: String(e?.message || e) });
@@ -623,7 +627,11 @@ MODIFIED CODE:`;
       
       this.panel?.webview.postMessage({ type: 'chatDone', model });
     } catch (e) {
-      this.panel?.webview.postMessage({ type: 'chatError', model, message: String((e as any)?.message || e) });
+      if (this.isPaused || this.wasStopped) {
+        // suppress abort error
+      } else {
+        this.panel?.webview.postMessage({ type: 'chatError', model, message: String((e as any)?.message || e) });
+      }
     }
   }
 

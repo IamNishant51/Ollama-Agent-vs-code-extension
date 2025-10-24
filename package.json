@@ -63,13 +63,23 @@
         },
         "ollamaAgent.provider": {
           "type": "string",
-          "enum": ["ollama", "openai", "anthropic", "google", "other"],
+          "enum": [
+            "ollama",
+            "openai",
+            "anthropic",
+            "google",
+            "other"
+          ],
           "default": "ollama",
           "description": "Default AI provider to use in the chat panel"
         },
         "ollamaAgent.mode": {
           "type": "string",
-          "enum": ["read", "agent", "combine"],
+          "enum": [
+            "read",
+            "agent",
+            "combine"
+          ],
           "default": "read",
           "description": "Read: plan only; Agent: auto-apply edits; Combine: run two models in parallel and merge"
         },
@@ -110,57 +120,214 @@
       ]
     },
     "commands": [
-      { "command": "ollamaAgent.chat", "title": "Ollama Agent: Open Chat", "icon": "$(comment-discussion)" },
-      { "command": "ollamaAgent.openReadmeMode", "title": "Ollama Agent: README Generator", "icon": "$(book)" },
-      { "command": "ollamaAgent.askSelection", "title": "Ollama Agent: Ask About Selection", "icon": "$(question)" },
-      { "command": "ollamaAgent.generateCode", "title": "Ollama Agent: Generate Code Here", "icon": "$(code)" },
-      { "command": "ollamaAgent.inlineEdit", "title": "Ollama Agent: Edit Selection by Instruction", "icon": "$(edit)" },
-      { "command": "ollamaAgent.explainSelection", "title": "Ollama Agent: Explain Selection", "icon": "$(book)" },
-      { "command": "ollamaAgent.generateTests", "title": "Ollama Agent: Generate Unit Tests", "icon": "$(beaker)" },
-      { "command": "ollamaAgent.generateCommitMessage", "title": "Ollama Agent: Generate Commit Message", "icon": "$(git-commit)" },
-      { "command": "ollamaAgent.analyzeProblems", "title": "Ollama Agent: Analyze Problems", "icon": "$(warning)" },
-      { "command": "ollamaAgent.explainCommand", "title": "Ollama Agent: Explain Shell Command", "icon": "$(terminal)" },
-      { "command": "ollamaAgent.brush.simplify", "title": "Ollama Agent: Brush – Simplify", "icon": "$(wand)" },
-      { "command": "ollamaAgent.brush.addTypes", "title": "Ollama Agent: Brush – Add Types", "icon": "$(symbol-parameter)" },
-      { "command": "ollamaAgent.brush.optimize", "title": "Ollama Agent: Brush – Optimize", "icon": "$(rocket)" },
-      { "command": "ollamaAgent.indexProject", "title": "Ollama Agent: Rebuild Project Index", "icon": "$(refresh)" },
-      { "command": "ollamaAgent.showIndexStats", "title": "Ollama Agent: Show Index Stats", "icon": "$(graph)" },
-      { "command": "ollamaAgent.prSummary", "title": "Ollama Agent: PR Summary", "icon": "$(git-pull-request)" },
-      { "command": "ollamaAgent.prReviewComments", "title": "Ollama Agent: PR Review Comments", "icon": "$(comment-discussion)" },
-      { "command": "ollamaAgent.addFileHere", "title": "Ollama Agent: Add File Here", "icon": "$(new-file)" },
-      { "command": "ollamaAgent.addFileAI", "title": "Ollama Agent: Add File (AI)", "icon": "$(sparkle)" },
-      { "command": "ollamaAgent.extractFunction", "title": "Ollama Agent: Extract Function" },
-      { "command": "ollamaAgent.translateSelection", "title": "Ollama Agent: Translate Selection" },
-      { "command": "ollamaAgent.generateReadme", "title": "Ollama Agent: Generate README" },
-      { "command": "ollamaAgent.fixProblemHere", "title": "Ollama Agent: Fix This Problem" }
+      {
+        "command": "ollamaAgent.chat",
+        "title": "Ollama Agent: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ollamaAgent.openReadmeMode",
+        "title": "Ollama Agent: README Generator",
+        "icon": "$(book)"
+      },
+      {
+        "command": "ollamaAgent.askSelection",
+        "title": "Ollama Agent: Ask About Selection",
+        "icon": "$(question)"
+      },
+      {
+        "command": "ollamaAgent.generateCode",
+        "title": "Ollama Agent: Generate Code Here",
+        "icon": "$(code)"
+      },
+      {
+        "command": "ollamaAgent.inlineEdit",
+        "title": "Ollama Agent: Edit Selection by Instruction",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "ollamaAgent.explainSelection",
+        "title": "Ollama Agent: Explain Selection",
+        "icon": "$(book)"
+      },
+      {
+        "command": "ollamaAgent.generateTests",
+        "title": "Ollama Agent: Generate Unit Tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "ollamaAgent.generateCommitMessage",
+        "title": "Ollama Agent: Generate Commit Message",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "ollamaAgent.analyzeProblems",
+        "title": "Ollama Agent: Analyze Problems",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "ollamaAgent.explainCommand",
+        "title": "Ollama Agent: Explain Shell Command",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "ollamaAgent.brush.simplify",
+        "title": "Ollama Agent: Brush – Simplify",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "ollamaAgent.brush.addTypes",
+        "title": "Ollama Agent: Brush – Add Types",
+        "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "ollamaAgent.brush.optimize",
+        "title": "Ollama Agent: Brush – Optimize",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "ollamaAgent.indexProject",
+        "title": "Ollama Agent: Rebuild Project Index",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ollamaAgent.showIndexStats",
+        "title": "Ollama Agent: Show Index Stats",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "ollamaAgent.prSummary",
+        "title": "Ollama Agent: PR Summary",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "ollamaAgent.prReviewComments",
+        "title": "Ollama Agent: PR Review Comments",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ollamaAgent.addFileHere",
+        "title": "Ollama Agent: Add File Here",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "ollamaAgent.addFileAI",
+        "title": "Ollama Agent: Add File (AI)",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "ollamaAgent.extractFunction",
+        "title": "Ollama Agent: Extract Function"
+      },
+      {
+        "command": "ollamaAgent.translateSelection",
+        "title": "Ollama Agent: Translate Selection"
+      },
+      {
+        "command": "ollamaAgent.generateReadme",
+        "title": "Ollama Agent: Generate README"
+      },
+      {
+        "command": "ollamaAgent.fixProblemHere",
+        "title": "Ollama Agent: Fix This Problem"
+      }
     ],
     "menus": {
       "commandPalette": [
-        { "command": "ollamaAgent.chat", "when": "true" },
-        { "command": "ollamaAgent.openReadmeMode", "when": "true" },
-        { "command": "ollamaAgent.askSelection", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.generateCode", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.inlineEdit", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.explainSelection", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.generateTests", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.generateCommitMessage", "when": "true" },
-        { "command": "ollamaAgent.brush.simplify", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.brush.addTypes", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.brush.optimize", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.indexProject", "when": "true" },
-        { "command": "ollamaAgent.showIndexStats", "when": "true" },
-        { "command": "ollamaAgent.prSummary", "when": "true" },
-        { "command": "ollamaAgent.prReviewComments", "when": "true" },
-        { "command": "ollamaAgent.analyzeProblems", "when": "editorTextFocus" },
-        { "command": "ollamaAgent.explainCommand", "when": "true" },
-        { "command": "ollamaAgent.addFileHere", "when": "true" },
-        { "command": "ollamaAgent.addFileAI", "when": "true" },
-        { "command": "ollamaAgent.extractFunction", "when": "editorHasSelection" },
-        { "command": "ollamaAgent.translateSelection", "when": "editorHasSelection" },
-        { "command": "ollamaAgent.generateReadme", "when": "workspaceFolderCount > 0" }
+        {
+          "command": "ollamaAgent.chat",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.openReadmeMode",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.askSelection",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.generateCode",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.inlineEdit",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.explainSelection",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.generateTests",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.generateCommitMessage",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.brush.simplify",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.brush.addTypes",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.brush.optimize",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.indexProject",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.showIndexStats",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.prSummary",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.prReviewComments",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.analyzeProblems",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "ollamaAgent.explainCommand",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.addFileHere",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.addFileAI",
+          "when": "true"
+        },
+        {
+          "command": "ollamaAgent.extractFunction",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "ollamaAgent.translateSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "ollamaAgent.generateReadme",
+          "when": "workspaceFolderCount > 0"
+        }
       ],
       "commandCenter": [
-        { "command": "ollamaAgent.chat", "group": "navigation@10" }
+        {
+          "command": "ollamaAgent.chat",
+          "group": "navigation@10"
+        }
       ],
       "editor/context": [
         {
@@ -179,16 +346,41 @@
           "command": "ollamaAgent.explainSelection",
           "group": "navigation@102"
         },
-        { "command": "ollamaAgent.brush.simplify", "group": "navigation@103" },
-        { "command": "ollamaAgent.brush.addTypes", "group": "navigation@104" },
-        { "command": "ollamaAgent.brush.optimize", "group": "navigation@105" },
-        { "command": "ollamaAgent.addFileHere", "group": "navigation@110" },
-        { "command": "ollamaAgent.addFileAI", "group": "navigation@111" },
-        { "command": "ollamaAgent.extractFunction", "group": "2_code@20" },
-        { "command": "ollamaAgent.translateSelection", "group": "2_code@21" }
+        {
+          "command": "ollamaAgent.brush.simplify",
+          "group": "navigation@103"
+        },
+        {
+          "command": "ollamaAgent.brush.addTypes",
+          "group": "navigation@104"
+        },
+        {
+          "command": "ollamaAgent.brush.optimize",
+          "group": "navigation@105"
+        },
+        {
+          "command": "ollamaAgent.addFileHere",
+          "group": "navigation@110"
+        },
+        {
+          "command": "ollamaAgent.addFileAI",
+          "group": "navigation@111"
+        },
+        {
+          "command": "ollamaAgent.extractFunction",
+          "group": "2_code@20"
+        },
+        {
+          "command": "ollamaAgent.translateSelection",
+          "group": "2_code@21"
+        }
       ],
       "editor/title": [
-        { "command": "ollamaAgent.chat", "when": "true", "group": "navigation@10" }
+        {
+          "command": "ollamaAgent.chat",
+          "when": "true",
+          "group": "navigation@10"
+        }
       ]
     }
   },
@@ -205,18 +397,19 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
     "@types/vscode": "^1.105.0",
     "@typescript-eslint/eslint-plugin": "^8.39.0",
     "@typescript-eslint/parser": "^8.39.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.32.0",
-    "typescript": "^5.9.2",
     "esbuild": "^0.23.1",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.1"
+    "eslint": "^9.32.0",
+    "typescript": "^5.9.2"
   },
   "dependencies": {
+    "prismjs": "^1.30.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   }
