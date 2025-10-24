@@ -91,7 +91,7 @@ export default function App() {
   const [readmePlacement, setReadmePlacement] = useState('GitHub');
   const [readmeNotes, setReadmeNotes] = useState('');
   const [readmeDeep, setReadmeDeep] = useState(true);
-  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<Array<{ name: string; extension: string }>>([]);
   const [apiKey, setApiKey] = useState('');
   const [host, setHost] = useState('localhost');
   const [port, setPort] = useState(11434);
@@ -127,6 +127,8 @@ export default function App() {
     } catch {}
     const onMessage = (ev: MessageEvent<ChatEvent | any>) => {
       const msg = ev.data;
+      console.log('📩 Webview received message:', msg.type, msg);
+      
       switch (msg.type) {
         case 'models':
           setModels(msg.models || []);
@@ -199,7 +201,25 @@ export default function App() {
           }
           if ((msg as any).type === 'filesPicked' && Array.isArray((msg as any).files)) {
             const picked: string[] = (msg as any).files;
-            setAttachedFiles((prev) => Array.from(new Set([...(prev || []), ...picked])));
+            const filesWithExt = picked.map((name) => ({
+              name,
+              extension: name.split('.').pop() || ''
+            }));
+            setAttachedFiles((prev) => {
+              const existing = new Set(prev.map((f) => f.name));
+              const newFiles = filesWithExt.filter((f) => !existing.has(f.name));
+              return [...prev, ...newFiles];
+            });
+          }
+          if ((msg as any).type === 'autoAttachFile' && (msg as any).fileName) {
+            // Auto-attach current file when chat opens (like Cursor)
+            // This REPLACES all files with the current one (like Cursor behavior)
+            const fileName: string = (msg as any).fileName;
+            const fileExtension: string = (msg as any).fileExtension || fileName.split('.').pop() || '';
+            console.log('Auto-attaching file (replacing previous):', fileName, 'ext:', fileExtension);
+            
+            // Always replace with just the current file
+            setAttachedFiles([{ name: fileName, extension: fileExtension }]);
           }
           if ((msg as any).type === 'switchThread' && (msg as any).id) {
             switchThread((msg as any).id);
@@ -217,6 +237,58 @@ export default function App() {
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, []);
+
+  // Get file icon (Unicode symbols that look professional)
+  function getFileIcon(extension: string): string {
+    const ext = extension.toLowerCase();
+    const iconMap: Record<string, string> = {
+      // Programming Languages
+      js: '⚡',
+      jsx: '⚛',
+      ts: '📘',
+      tsx: '⚛',
+      py: '🐍',
+      java: '☕',
+      cpp: '⚙',
+      c: '⚙',
+      cs: '#️⃣',
+      go: '🔷',
+      rs: '🦀',
+      php: '🐘',
+      rb: '💎',
+      swift: '🕊',
+      kt: '🅺',
+      
+      // Web
+      html: '🌐',
+      css: '🎨',
+      scss: '🎨',
+      sass: '🎨',
+      less: '🎨',
+      
+      // Data/Config
+      json: '📋',
+      xml: '📄',
+      yaml: '⚙',
+      yml: '⚙',
+      toml: '⚙',
+      ini: '⚙',
+      
+      // Markdown/Docs
+      md: '📝',
+      txt: '📄',
+      pdf: '📕',
+      
+      // Others
+      sh: '🖥',
+      bat: '🖥',
+      cmd: '🖥',
+      sql: '🗄',
+      env: '🔧',
+    };
+    
+    return iconMap[ext] || '📄';
+  }
 
   // AI Code Action Handlers (Cursor/Copilot style)
   function handleExplainCode() {
@@ -259,7 +331,10 @@ export default function App() {
     // Extract @ file mentions from prompt
     const mentions = prompt.match(/@([\w\-\.\/]+)/g) || [];
     const mentionFiles = mentions.map(m => m.slice(1)); // Remove @ symbol
-    const allFiles = Array.from(new Set([...(attachedFiles || []), ...mentionFiles]));
+    
+    // Combine attached files (as names only) with mention files
+    const attachedFileNames = attachedFiles.map(f => f.name);
+    const allFiles = Array.from(new Set([...attachedFileNames, ...mentionFiles]));
     
     appendUser(prompt);
     
@@ -1300,14 +1375,15 @@ export default function App() {
                 <div key={idx} style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '4px',
-                  padding: '4px 8px',
+                  gap: '6px',
+                  padding: '4px 10px',
                   background: 'var(--color-bg-primary)',
                   border: '1px solid var(--color-border)',
-                  borderRadius: '4px',
+                  borderRadius: '6px',
                   fontSize: '11px'
                 }}>
-                  <span>📄 {file}</span>
+                  <span style={{ fontSize: '14px' }}>{getFileIcon(file.extension)}</span>
+                  <span>{file.name}</span>
                   <button
                     onClick={() => setAttachedFiles(attachedFiles.filter((_, i) => i !== idx))}
                     style={{
@@ -1316,7 +1392,8 @@ export default function App() {
                       color: 'var(--color-text-secondary)',
                       cursor: 'pointer',
                       padding: '0 4px',
-                      fontSize: '14px'
+                      fontSize: '14px',
+                      marginLeft: '4px'
                     }}
                   >
                     ×

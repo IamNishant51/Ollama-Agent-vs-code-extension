@@ -58,12 +58,41 @@ class OllamaChatPanel {
         vscode.window.onDidChangeActiveTextEditor((editor) => {
             if (editor) {
                 this.lastActiveEditor = editor;
+                // Auto-attach new file when switching (like Cursor)
+                if (this.panel && this.panel.visible) {
+                    this.autoAttachCurrentFile();
+                }
             }
         });
     }
     // Allow extension to post messages into the chat webview
     postMessage(msg) {
         this.panel?.webview.postMessage(msg);
+    }
+    // Automatically attach the currently open file as context (like Cursor)
+    autoAttachCurrentFile() {
+        const editor = this.lastActiveEditor || vscode.window.activeTextEditor;
+        console.log('autoAttachCurrentFile called - editor:', editor?.document.fileName);
+        if (!editor) {
+            console.log('No editor found, skipping auto-attach');
+            return; // No file open, nothing to attach
+        }
+        const document = editor.document;
+        const fileName = vscode.workspace.asRelativePath(document.uri);
+        const fileExtension = document.uri.fsPath.split('.').pop() || '';
+        console.log('File details - scheme:', document.uri.scheme, 'isUntitled:', document.isUntitled, 'fileName:', fileName);
+        // Don't attach if it's an untitled file or output/debug console
+        if (document.isUntitled || document.uri.scheme !== 'file') {
+            console.log('Skipping non-file or untitled document');
+            return;
+        }
+        console.log('Sending autoAttachFile message for:', fileName);
+        // Send the file name to webview to add as attached context
+        this.panel?.webview.postMessage({
+            type: 'autoAttachFile',
+            fileName: fileName,
+            fileExtension: fileExtension
+        });
     }
     show(column = vscode.ViewColumn.Beside) {
         if (this.panel) {
@@ -72,6 +101,8 @@ class OllamaChatPanel {
                 this.panel.webview.postMessage({ type: 'prefill', text: this.pendingPrefill });
                 this.pendingPrefill = undefined;
             }
+            // Auto-attach current file as context
+            this.autoAttachCurrentFile();
             return;
         }
         this.panel = vscode.window.createWebviewPanel('ollamaAgent.chatPanel', 'Ollama Chat', { viewColumn: column, preserveFocus: true }, {
@@ -84,10 +115,16 @@ class OllamaChatPanel {
         });
         this.panel.onDidDispose(() => (this.panel = undefined));
         this.panel.webview.html = this.getHtml(this.panel.webview);
+        console.log('Webview created, setting up delayed auto-attach');
         if (this.pendingPrefill) {
             this.panel.webview.postMessage({ type: 'prefill', text: this.pendingPrefill });
             this.pendingPrefill = undefined;
         }
+        // Auto-attach current file as context after webview is ready
+        setTimeout(() => {
+            console.log('Delayed auto-attach triggered');
+            this.autoAttachCurrentFile();
+        }, 500); // Increased delay to ensure webview is ready
         this.panel.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
                 case 'stop': {
