@@ -52,6 +52,10 @@ class OllamaChatPanel {
         this.extensionUri = extensionUri;
         this.client = client;
     }
+    // Allow extension to post messages into the chat webview
+    postMessage(msg) {
+        this.panel?.webview.postMessage(msg);
+    }
     show(column = vscode.ViewColumn.Beside) {
         if (this.panel) {
             this.panel.reveal(column, true);
@@ -77,6 +81,33 @@ class OllamaChatPanel {
         }
         this.panel.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
+                case 'stop': {
+                    if (this.controller) {
+                        // Abort current generation and prevent resume
+                        try {
+                            this.controller.abort();
+                        }
+                        catch { }
+                        this.controller = undefined;
+                    }
+                    // Clear current prompt so resume cannot continue
+                    this.currentPrompt = undefined;
+                    this.isPaused = false;
+                    // Notify webview that chat is done/stopped
+                    this.panel?.webview.postMessage({ type: 'chatDone', model: this.currentModel });
+                    break;
+                }
+                case 'threadsUpdate': {
+                    try {
+                        // Relay to extension so it can update left view and persist
+                        await vscode.commands.executeCommand('ollamaAgent.threadsUpdate', {
+                            threads: msg.threads || [],
+                            currentId: msg.currentId || ''
+                        });
+                    }
+                    catch { }
+                    break;
+                }
                 case 'startReadme': {
                     try {
                         const model = msg.model || '';

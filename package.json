@@ -1,9 +1,9 @@
 {
-  "name": "ollama-agent",
+  "name": "Ollama-Ai-agent",
   "publisher": "NishantUnavane",
   "displayName": "Ollama Agent - Local AI Coding Assistant",
   "description": "Transform your locally-running Ollama models into an intelligent coding agent. Chat, generate code, edit files, and automate tasks—all running 100% locally with full privacy.",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "icon": "media/ollama.png",
   "repository": {
     "type": "git",
@@ -63,15 +63,15 @@
         },
         "ollamaAgent.provider": {
           "type": "string",
-          "enum": ["ollama", "openai", "anthropic", "other"],
+          "enum": ["ollama", "openai", "anthropic", "google", "other"],
           "default": "ollama",
           "description": "Default AI provider to use in the chat panel"
         },
         "ollamaAgent.mode": {
           "type": "string",
-          "enum": ["read", "agent"],
+          "enum": ["read", "agent", "combine"],
           "default": "read",
-          "description": "Read: never auto-apply edits; Agent: auto-apply edits suggested by the AI"
+          "description": "Read: plan only; Agent: auto-apply edits; Combine: run two models in parallel and merge"
         },
         "ollamaAgent.enableInlineCompletions": {
           "type": "boolean",

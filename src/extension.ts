@@ -48,6 +48,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   const chatPanel = new OllamaChatPanel(context.extensionUri, client);
 
+  // Shared in-memory store for chat history across views
+  let latestThreadsState: { threads: any[]; currentId: string } | undefined = context.globalState.get('ollamaAgent.threadsState');
+
   // Build initial project index in background
   const enableIndex = vscode.workspace.getConfiguration('ollamaAgent').get<boolean>('enableProjectIndex', true);
   if (enableIndex && vscode.workspace.workspaceFolders?.length) {
@@ -548,6 +551,44 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ollamaAgent.openReadmeMode', async () => {
       chatPanel.show(vscode.ViewColumn.Beside);
       chatPanel.openReadmeGenerator();
+    })
+  );
+
+  // Relay thread updates from the chat webview to the left view and persist
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.threadsUpdate', async (payload: { threads: any[]; currentId: string }) => {
+      try {
+        latestThreadsState = { threads: payload?.threads || [], currentId: payload?.currentId || '' };
+        await context.globalState.update('ollamaAgent.threadsState', latestThreadsState);
+        // push to left panel if visible
+        try { (chatProvider as any)?.postMessage?.({ type: 'threadsState', ...latestThreadsState }); } catch {}
+      } catch {}
+    })
+  );
+
+  // Left panel requests current threads
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.requestThreads', async () => {
+      if (!latestThreadsState) {
+        latestThreadsState = context.globalState.get('ollamaAgent.threadsState');
+      }
+      try { (chatProvider as any)?.postMessage?.({ type: 'threadsState', ...(latestThreadsState || { threads: [], currentId: '' }) }); } catch {}
+    })
+  );
+
+  // Actions from left view to control chat webview threads
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ollamaAgent.switchThread', async (id: string) => {
+      chatPanel.show(vscode.ViewColumn.Beside);
+      chatPanel.postMessage({ type: 'switchThread', id });
+    }),
+    vscode.commands.registerCommand('ollamaAgent.deleteThread', async (id: string) => {
+      chatPanel.show(vscode.ViewColumn.Beside);
+      chatPanel.postMessage({ type: 'deleteThread', id });
+    }),
+    vscode.commands.registerCommand('ollamaAgent.newChatThread', async () => {
+      chatPanel.show(vscode.ViewColumn.Beside);
+      chatPanel.postMessage({ type: 'newThread' });
     })
   );
 

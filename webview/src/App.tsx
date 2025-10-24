@@ -13,7 +13,7 @@ type ChatEvent =
   | { type: 'chatDone'; model: string }
   | { type: 'error'; message: string }
   | { type: 'chatError'; model: string; message: string }
-  | { type: 'config'; mode: 'read' | 'agent'; host?: string; port?: number; apiKey?: string }
+  | { type: 'config'; mode: 'read' | 'agent' | 'combine'; host?: string; port?: number; apiKey?: string }
   | { type: 'configSaved' };
 
 type Thread = {
@@ -26,6 +26,7 @@ type Thread = {
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>('');
+  const [selected2, setSelected2] = useState<string>(''); // Second model for combine mode
   const [prompt, setPrompt] = useState('');
   const [status, setStatus] = useState<'Ready' | 'Streaming' | 'Error'>('Ready');
   const [paused, setPaused] = useState(false);
@@ -37,7 +38,7 @@ export default function App() {
   const [currentId, setCurrentId] = useState<string>('');
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
-  const [mode, setMode] = useState<'read' | 'agent'>('read');
+  const [mode, setMode] = useState<'read' | 'agent' | 'combine'>('read');
   const [showReadme, setShowReadme] = useState(false);
   const [readmeStyle, setReadmeStyle] = useState('General');
   const [readmePlacement, setReadmePlacement] = useState('GitHub');
@@ -73,13 +74,16 @@ export default function App() {
         setCurrentId(t.id);
       }
     } catch {}
-    const onMessage = (ev: MessageEvent<ChatEvent>) => {
+    const onMessage = (ev: MessageEvent<ChatEvent | any>) => {
       const msg = ev.data;
       switch (msg.type) {
         case 'models':
           setModels(msg.models || []);
           if ((msg.models || []).length && !selected) {
             setSelected((msg.models || [])[0]);
+          }
+          if ((msg.models || []).length > 1 && !selected2) {
+            setSelected2((msg.models || [])[1]);
           }
           break;
         case 'prefill':
@@ -135,6 +139,15 @@ export default function App() {
           if ((msg as any).type === 'openReadmeGenerator') {
             setShowReadme(true);
           }
+          if ((msg as any).type === 'switchThread' && (msg as any).id) {
+            switchThread((msg as any).id);
+          }
+          if ((msg as any).type === 'deleteThread' && (msg as any).id) {
+            deleteThread((msg as any).id);
+          }
+          if ((msg as any).type === 'newThread') {
+            newChat();
+          }
           break;
         }
       }
@@ -147,7 +160,12 @@ export default function App() {
 
   function send() {
     const model = selected || (models[0] || '');
+    const model2 = mode === 'combine' ? (selected2 || (models[1] || '')) : '';
     if (!model || !prompt.trim()) return;
+    if (mode === 'combine' && !model2) {
+      appendAssistant('Error: Combine mode requires two different models to be selected.');
+      return;
+    }
     
     // Extract @ file mentions from prompt
     const mentions = prompt.match(/@([\w\-\.\/]+)/g) || [];
@@ -157,9 +175,25 @@ export default function App() {
     
     setSending(true);
     setStatus('Streaming');
-    vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat, attachedFiles: files });
+    
+    if (mode === 'combine') {
+      vscode.postMessage({ type: 'startChat', models: [model, model2], prompt, useChat, attachedFiles: files, mode: 'combine' });
+    } else {
+      vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat, attachedFiles: files, mode });
+    }
     setPrompt('');
     setAttachedFiles([]);
+  }
+
+  function stop() {
+    try {
+      vscode.postMessage({ type: 'stop' });
+    } catch {}
+    // Update local state optimistically
+    setSending(false);
+    setPaused(false);
+    setStatus('Ready');
+    setPending(0);
   }
 
   function submitReadme() {
@@ -189,8 +223,8 @@ export default function App() {
     }, 800);
   }
 
-  function toggleMode(newMode?: 'read' | 'agent') {
-    const targetMode = newMode || (mode === 'read' ? 'agent' : 'read');
+  function toggleMode(newMode?: 'read' | 'agent' | 'combine') {
+    const targetMode = newMode || (mode === 'read' ? 'agent' : mode === 'agent' ? 'combine' : 'read');
     setMode(targetMode);
     vscode.postMessage({
       type: 'updateConfig',
@@ -242,7 +276,11 @@ export default function App() {
     }
   const bubble = document.createElement('div');
   bubble.className = 'bubble assistant' + (loading ? ' loading' : '');
-  if (loading) bubble.textContent = '';
+  if (loading) {
+    bubble.innerHTML = '<div class="ai-typing-indicator"><span></span><span></span><span></span></div>';
+  } else {
+    bubble.textContent = '';
+  }
     wrap.appendChild(bubble);
 
     
@@ -278,6 +316,7 @@ export default function App() {
     if (!lastAssistant) appendAssistant(undefined, true);
     if (lastAssistant!.classList.contains('loading')) {
       lastAssistant!.classList.remove('loading');
+      lastAssistant!.innerHTML = ''; // Clear typing indicator
     }
     lastAssistant!.textContent += text;
     const root = contentRef.current!;
@@ -500,6 +539,7 @@ export default function App() {
 
   function persistState(thrs: Thread[], id: string, history: boolean) {
     try { vscode.setState?.({ threads: thrs, currentId: id, historyOpen: history }); } catch {}
+    try { vscode.postMessage({ type: 'threadsUpdate', threads: thrs, currentId: id }); } catch {}
   }
 
   useEffect(() => {
@@ -507,6 +547,11 @@ export default function App() {
     persistState(threads, currentId, historyOpen);
     
   }, [historyOpen]);
+
+  // After initial state is established, publish once so left panel can render
+  useEffect(() => {
+    try { vscode.postMessage({ type: 'threadsUpdate', threads, currentId }); } catch {}
+  }, [currentId]);
 
   const styles = useMemo(() => ({
     container: {
@@ -519,10 +564,9 @@ export default function App() {
     <div className="panel" style={styles.container}>
       {(sending || pending > 0) && <div className="progress" aria-hidden="true" />}
       <div className="toolbar">
-        <button className="icon" title={historyOpen ? 'Hide history' : 'Show history'} onClick={() => setHistoryOpen((v) => !v)}>☰</button>
         <span className="title">Ollama</span>
         <div className="model">
-          <span className="model-label">Model</span>
+          <span className="model-label">Model {mode === 'combine' ? '1' : ''}</span>
           <div className="select-wrap">
             <select
               className="select"
@@ -542,16 +586,58 @@ export default function App() {
             </select>
           </div>
         </div>
+        {mode === 'combine' && (
+          <div className="model">
+            <span className="model-label">Model 2</span>
+            <div className="select-wrap">
+              <select
+                className="select"
+                value={selected2}
+                onChange={(e) => setSelected2(e.target.value)}
+                disabled={models.length === 0}
+              >
+                {models.length === 0 ? (
+                  <option value="">No models</option>
+                ) : (
+                  models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          </div>
+        )}
         <span className="tag">{paused ? 'Paused' : status}{(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}</span>
         <span className="spacer" />
-        <button className="btn" onClick={() => setShowReadme((v) => !v)}>README</button>
+        <button className="btn" onClick={() => setShowReadme((v) => !v)}>
+          📄 README
+        </button>
         {(sending || pending > 0) && (
           <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
         )}
-        <button className="btn secondary" onClick={newChat}>New Chat</button>
+        <button 
+          className={`btn ${mode === 'combine' ? 'combine-active' : ''}`}
+          onClick={() => toggleMode('combine')}
+          title="Combine two AI models for better responses"
+        >
+          <span className="btn-icon">🔀</span>
+          <span className="btn-text">Combine Mode</span>
+        </button>
+        <button className="btn secondary" onClick={newChat}>
+          <span className="btn-icon">＋</span>
+          <span className="btn-text">New Chat</span>
+        </button>
         <div className="mode-toggle">
-          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} onClick={() => toggleMode('read')}>Read</button>
-          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} onClick={() => toggleMode('agent')}>Agent</button>
+          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} onClick={() => toggleMode('read')}>
+            <span className="btn-icon">📖</span>
+            <span className="btn-text">Read</span>
+          </button>
+          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} onClick={() => toggleMode('agent')}>
+            <span className="btn-icon">🤖</span>
+            <span className="btn-text">Agent</span>
+          </button>
         </div>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
@@ -606,10 +692,14 @@ export default function App() {
         </aside>
         <main className="chat">
           {showReadme && (
-            <div style={{ padding: 12, borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(20,20,20,0.6)' }}>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 12, opacity: .85 }}>Style</span>
+            <div className="readme-form">
+              <div className="readme-header">
+                <h3>📄 Generate README</h3>
+                <button className="close-btn" onClick={() => setShowReadme(false)} title="Close">✕</button>
+              </div>
+              <div className="readme-options">
+                <label className="readme-field">
+                  <span className="field-label">📝 Style</span>
                   <select value={readmeStyle} onChange={(e) => setReadmeStyle(e.target.value)}>
                     <option>General</option>
                     <option>Technical (Functionality/API)</option>
@@ -619,8 +709,8 @@ export default function App() {
                     <option>Backend Service</option>
                   </select>
                 </label>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 12, opacity: .85 }}>Placement</span>
+                <label className="readme-field">
+                  <span className="field-label">🎯 Placement</span>
                   <select value={readmePlacement} onChange={(e) => setReadmePlacement(e.target.value)}>
                     <option>GitHub</option>
                     <option>VS Code Marketplace</option>
@@ -628,20 +718,22 @@ export default function App() {
                     <option>Website</option>
                   </select>
                 </label>
-                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <label className="readme-checkbox">
                   <input type="checkbox" checked={readmeDeep} onChange={(e) => setReadmeDeep(e.target.checked)} />
-                  <span style={{ fontSize: 12, opacity: .85 }}>Read more of the codebase (slower)</span>
+                  <span>🔍 Deep scan codebase (slower but more detailed)</span>
                 </label>
               </div>
               <textarea
-                placeholder="Additional notes: highlight features, target audience, badges, license, etc."
+                className="readme-notes"
+                placeholder="✨ Additional notes: highlight key features, target audience, add badges, mention license, special instructions..."
                 value={readmeNotes}
                 onChange={(e) => setReadmeNotes(e.target.value)}
-                style={{ width: '100%', minHeight: 60 }}
               />
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <button className="send" onClick={submitReadme}>Generate README</button>
-                <button className="btn" onClick={() => setShowReadme(false)}>Hide</button>
+              <div className="readme-actions">
+                <button className="send" onClick={submitReadme}>
+                  <span>✨ Generate README</span>
+                </button>
+                <button className="btn" onClick={() => setShowReadme(false)}>Cancel</button>
               </div>
             </div>
           )}
@@ -659,9 +751,14 @@ export default function App() {
             }
           }}
         />
-        <button className="send" onClick={send} disabled={sending || pending > 0}>
-          {sending ? <><span className="spinner" /> Sending…</> : (pending > 0 ? <><span className="spinner" /> Generating…</> : 'Send')}
-        </button>
+          <button
+            className="send"
+            onClick={() => (pending > 0 ? stop() : send())}
+            disabled={sending && pending === 0}
+          >
+            {pending > 0 ? <span style={{ color: '#ff6b6b', fontWeight: 700 }}>Stop</span>
+              : (sending ? <><span className="spinner" /> Sending…</> : 'Send')}
+          </button>
           </div>
         </main>
       </div>
@@ -675,8 +772,8 @@ function injectStyles() {
     body {
       font-family: Inter, 'Segoe UI', sans-serif;
       margin: 0;
-      color: #e6e6e6;
-      background: #0e0e0e;
+      color: var(--vscode-editor-foreground, #e6e6e6);
+      background: var(--vscode-editor-background, #1e1e1e);
       display: flex;
       height: 100vh;
       overflow: hidden; 
@@ -691,8 +788,8 @@ function injectStyles() {
       height: 100%;
       min-height: 100vh;
       backdrop-filter: blur(12px);
-      background: rgba(20, 20, 20, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.05);
+      background: var(--vscode-sideBar-background, rgba(30, 30, 30, 0.95));
+      border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.05));
     }
 
     /* Toolbar */
@@ -701,64 +798,305 @@ function injectStyles() {
       gap: 10px;
       align-items: center;
       padding: 12px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(20, 20, 20, 0.75);
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+      background: var(--vscode-titleBar-activeBackground, rgba(30, 30, 30, 0.95));
       position: sticky;
       top: 0;
       z-index: 3;
       backdrop-filter: blur(14px);
+      flex-wrap: wrap;
+      min-height: 48px;
     }
 
     .toolbar .title {
       font-weight: 600;
       font-size: 15px;
-      color: #ffffff;
+      color: var(--vscode-titleBar-activeForeground, #ffffff);
+      margin-right: auto;
+    }
+    
+    .toolbar .spacer {
+      flex: 1;
+      min-width: 20px;
     }
 
     .icon, .btn, .send {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
-      color: #e6e6e6;
-      border-radius: 8px;
-      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--vscode-button-secondaryForeground, #e6e6e6);
+      border-radius: 10px;
+      padding: 8px 14px;
       cursor: pointer;
-      transition: all 0.25s ease;
+      transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 
+        0 4px 12px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
     }
 
     .icon:hover, .btn:hover, .send:hover {
-      background: rgba(255,255,255,0.1);
-      transform: scale(1.05);
+      background: rgba(255, 255, 255, 0.12);
+      transform: translateY(-2px) scale(1.05);
+      box-shadow: 
+        0 8px 20px rgba(0, 0, 0, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
     }
 
     .btn.secondary {
-      background: rgba(255,255,255,0.1);
-      color: #ffffff;
-      font-weight: 500;
+      background: linear-gradient(135deg, 
+        rgba(14, 99, 156, 0.9) 0%, 
+        rgba(14, 99, 156, 0.8) 100%);
+      color: var(--vscode-button-foreground, #ffffff);
+      font-weight: 600;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 
+        0 4px 16px rgba(14, 99, 156, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
     }
 
-    .model { display:flex; align-items:center; gap:8px; }
-    .model-label { font-size: 12px; opacity:.85; }
-    .select-wrap { position: relative; }
+    .btn.secondary:hover {
+      background: linear-gradient(135deg, 
+        rgba(14, 99, 156, 1) 0%, 
+        rgba(14, 99, 156, 0.9) 100%);
+      box-shadow: 
+        0 8px 24px rgba(14, 99, 156, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+
+    .btn.combine-active {
+      background: linear-gradient(135deg, 
+        rgba(255, 107, 107, 0.9) 0%,
+        rgba(238, 90, 111, 0.85) 50%,
+        rgba(255, 107, 107, 0.9) 100%);
+      color: white;
+      font-weight: 700;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      box-shadow: 
+        0 8px 32px rgba(255, 107, 107, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      animation: pulse-combine 2s ease-in-out infinite;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .btn.combine-active:hover {
+      transform: translateY(-2px) scale(1.05);
+      box-shadow: 
+        0 12px 40px rgba(255, 107, 107, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.4),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+    }
+
+    @keyframes pulse-combine {
+      0%, 100% {
+        box-shadow: 
+          0 8px 32px rgba(255, 107, 107, 0.5),
+          inset 0 1px 0 rgba(255, 255, 255, 0.3),
+          inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+      }
+      50% {
+        box-shadow: 
+          0 12px 48px rgba(255, 107, 107, 0.7),
+          0 0 30px rgba(255, 107, 107, 0.4),
+          inset 0 1px 0 rgba(255, 255, 255, 0.4),
+          inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+      }
+    }
+
+    /* Responsive button text/icons */
+    .btn-text {
+      display: inline;
+    }
+    
+    .btn-icon {
+      display: none;
+    }
+
+    /* Keep Combine button always prominent */
+    .btn.combine-active .btn-text {
+      display: inline !important;
+    }
+
+    @media (max-width: 1200px) {
+      .toolbar {
+        gap: 8px;
+        padding: 10px 12px;
+      }
+      .model {
+        flex-direction: column;
+        gap: 4px;
+        align-items: flex-start;
+        padding: 4px 8px;
+      }
+      .select {
+        min-width: 180px;
+        padding: 10px 38px 10px 44px;
+        font-size: 13px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .btn-text:not(.combine-active .btn-text) {
+        display: none;
+      }
+      .btn-icon {
+        display: inline;
+      }
+      .mode-btn {
+        padding: 6px 10px;
+      }
+      .select {
+        min-width: 160px;
+        padding: 10px 36px 10px 42px;
+        font-size: 12px;
+      }
+      .model-label {
+        font-size: 11px;
+      }
+      /* Combine button stays visible with icon and text */
+      .btn.combine-active {
+        padding: 8px 12px;
+      }
+    }
+
+    .model { 
+      display:flex; 
+      align-items:center; 
+      gap:10px;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .model-label { 
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vscode-foreground, #e6e6e6);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+    .select-wrap { 
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+    .select-wrap::before {
+      content: '🤖';
+      position: absolute;
+      left: 16px;
+      font-size: 18px;
+      pointer-events: none;
+      z-index: 2;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+    }
     .select {
-      min-width: 200px;
-      background: rgba(30,30,30,0.9);
-      border: 1px solid rgba(255,255,255,0.12);
-      color: #e6e6e6;
-      border-radius: 999px;
-      padding: 8px 34px 8px 12px;
+      min-width: 220px;
+      background: linear-gradient(135deg, 
+        rgba(255, 255, 255, 0.1) 0%, 
+        rgba(255, 255, 255, 0.05) 50%,
+        rgba(255, 255, 255, 0.08) 100%);
+      border: 1.5px solid rgba(255, 255, 255, 0.18);
+      color: var(--vscode-input-foreground, #ffffff);
+      border-radius: 16px;
+      padding: 12px 42px 12px 48px;
       appearance: none;
       -webkit-appearance: none;
       -moz-appearance: none;
+      cursor: pointer;
+      transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+      letter-spacing: 0.5px;
+      backdrop-filter: blur(40px) saturate(180%);
+      -webkit-backdrop-filter: blur(40px) saturate(180%);
+      position: relative;
+      overflow: hidden;
+    }
+    .select::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255, 255, 255, 0.1), 
+        transparent);
+      transition: left 0.5s ease;
+    }
+    .select:hover::before {
+      left: 100%;
+    }
+    .select:hover {
+      background: linear-gradient(135deg, 
+        rgba(255, 255, 255, 0.15) 0%, 
+        rgba(255, 255, 255, 0.08) 50%,
+        rgba(255, 255, 255, 0.12) 100%);
+      border-color: rgba(100, 150, 255, 0.4);
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 
+        0 12px 40px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+        0 0 20px rgba(100, 150, 255, 0.15);
+    }
+    .select:focus {
+      outline: none;
+      border-color: rgba(100, 150, 255, 0.8);
+      background: linear-gradient(135deg, 
+        rgba(100, 150, 255, 0.15) 0%, 
+        rgba(100, 150, 255, 0.08) 50%,
+        rgba(100, 150, 255, 0.12) 100%);
+      box-shadow: 
+        0 16px 48px rgba(0, 0, 0, 0.25),
+        0 0 0 4px rgba(100, 150, 255, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+      transform: translateY(-2px) scale(1.02);
+    }
+    .select:active {
+      transform: translateY(0) scale(1);
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.15),
+        inset 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .select option {
+      background: rgba(30, 30, 30, 0.98);
+      color: var(--vscode-dropdown-foreground, #ffffff);
+      padding: 12px 16px;
+      font-weight: 600;
+      backdrop-filter: blur(20px);
     }
     .select-wrap::after {
-      content: '\u25BC'; 
+      content: '▼';
       position: absolute; 
-      right: 10px;
+      right: 16px;
       top: 50%; 
       transform: translateY(-50%);
-      font-size: 10px; 
-      opacity: .8; 
+      font-size: 10px;
+      opacity: .6;
       pointer-events: none;
+      color: var(--vscode-foreground, #e6e6e6);
+      transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+    }
+    .select:hover + .select-wrap::after,
+    .select:focus + .select-wrap::after {
+      opacity: 1;
+      transform: translateY(-50%) scale(1.2);
     }
 
     /* Layout */
@@ -775,8 +1113,8 @@ function injectStyles() {
     /* Sidebar */
     .history {
       overflow-y: auto;
-      border-right: 1px solid rgba(255,255,255,0.08);
-      background: rgba(15, 15, 15, 0.7);
+      border-right: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
+      background: var(--vscode-sideBar-background, rgba(30, 30, 30, 0.95));
       backdrop-filter: blur(12px);
       transition: all 0.3s ease;
     }
@@ -786,7 +1124,7 @@ function injectStyles() {
       align-items: center;
       justify-content: space-between;
       padding: 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
     }
 
     .history-list {
@@ -800,27 +1138,27 @@ function injectStyles() {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border: 1px solid rgba(255,255,255,0.08);
+      border: 1px solid var(--vscode-list-inactiveSelectionBackground, rgba(255,255,255,0.08));
       border-radius: 10px;
       padding: 8px 10px;
-      background: rgba(255,255,255,0.03);
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.03));
       transition: all 0.25s ease;
     }
 
     .history-item:hover {
-      background: rgba(255,255,255,0.06);
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
       transform: scale(1.01);
     }
 
     .history-item.active {
-      border-color: rgba(255,255,255,0.25);
-      background: rgba(255,255,255,0.08);
+      border-color: var(--vscode-list-activeSelectionBackground, rgba(14, 99, 156, 0.5));
+      background: var(--vscode-list-activeSelectionBackground, rgba(14, 99, 156, 0.3));
     }
 
     .history-title {
       background: transparent;
       border: none;
-      color: #e6e6e6;
+      color: var(--vscode-foreground, #e6e6e6);
       flex: 1;
       text-align: left;
       font-size: 14px;
@@ -836,7 +1174,7 @@ function injectStyles() {
       min-width: 0;
       min-height: 0; 
       height: 100%;
-      background: rgba(18,18,18,0.7);
+      background: var(--vscode-editor-background, rgba(30,30,30,0.95));
       backdrop-filter: blur(14px);
     }
 
@@ -899,9 +1237,9 @@ function injectStyles() {
      
       position: sticky;
       bottom: 0;
-      background: rgba(20,20,20,0.85);
+      background: var(--vscode-editor-background, rgba(30,30,30,0.95));
       backdrop-filter: blur(12px);
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
       padding: 10px 14px;
       display: flex;
       gap: 10px;
@@ -912,9 +1250,9 @@ function injectStyles() {
       flex: 1;
       min-height: 60px;
       resize: none;
-      background: rgba(255,255,255,0.05);
-      color: #e6e6e6;
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--vscode-input-background, rgba(255,255,255,0.05));
+      color: var(--vscode-input-foreground, #e6e6e6);
+      border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.08));
       border-radius: 12px;
       padding: 10px 14px;
       font-size: 14px;
@@ -922,22 +1260,156 @@ function injectStyles() {
     }
 
     .prompt:focus {
-      border-color: rgba(255,255,255,0.3);
-      background: rgba(255,255,255,0.08);
+      border-color: var(--vscode-focusBorder, rgba(14, 99, 156, 1));
+      background: var(--vscode-input-background, rgba(255,255,255,0.08));
     }
 
     .send {
       border-radius: 10px;
       font-weight: 500;
       padding: 10px 18px;
-      background: linear-gradient(135deg, #1a73e8, #1559b3);
-      color: white;
+      background: var(--vscode-button-background, linear-gradient(135deg, #1a73e8, #1559b3));
+      color: var(--vscode-button-foreground, white);
       border: none;
     }
 
     .send:hover {
+      background: var(--vscode-button-hoverBackground, linear-gradient(135deg, #1a73e8, #1559b3));
       filter: brightness(1.1);
       transform: scale(1.03);
+    }
+
+    /* README Generator Form */
+    .readme-form {
+      padding: 20px;
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
+      background: var(--vscode-editor-background, rgba(30,30,30,0.98));
+      border-radius: 12px;
+      margin: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+
+    .readme-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .readme-header h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--vscode-foreground, #ffffff);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-foreground, #cccccc);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+    }
+
+    .close-btn:hover {
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.1));
+      color: var(--vscode-errorForeground, #f48771);
+    }
+
+    .readme-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .readme-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--vscode-foreground, #cccccc);
+      opacity: 0.9;
+    }
+
+    .readme-field select {
+      background: var(--vscode-dropdown-background, rgba(60,60,60,0.95));
+      border: 1px solid var(--vscode-dropdown-border, rgba(255,255,255,0.12));
+      color: var(--vscode-dropdown-foreground, #e6e6e6);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .readme-field select:hover {
+      border-color: var(--vscode-focusBorder, rgba(14, 99, 156, 0.8));
+    }
+
+    .readme-field select:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder, rgba(14, 99, 156, 1));
+    }
+
+    .readme-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      grid-column: 1 / -1;
+      padding: 8px;
+      border-radius: 6px;
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.03));
+    }
+
+    .readme-checkbox input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .readme-checkbox span {
+      font-size: 13px;
+      color: var(--vscode-foreground, #cccccc);
+    }
+
+    .readme-notes {
+      width: 100%;
+      min-height: 80px;
+      resize: vertical;
+      background: var(--vscode-input-background, rgba(255,255,255,0.05));
+      color: var(--vscode-input-foreground, #e6e6e6);
+      border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.08));
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      margin-bottom: 12px;
+    }
+
+    .readme-notes:focus {
+      outline: none;
+      border-color: var(--vscode-focusBorder, rgba(14, 99, 156, 1));
+    }
+
+    .readme-notes::placeholder {
+      color: var(--vscode-input-placeholderForeground, rgba(255,255,255,0.5));
+    }
+
+    .readme-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
     }
 
     .copy-all {
@@ -1140,34 +1612,66 @@ function injectStyles() {
     .mode-toggle {
       display: flex;
       gap: 6px;
-      background: rgba(255,255,255,0.04);
+      background: var(--vscode-input-background, rgba(255,255,255,0.04));
       border-radius: 8px;
       padding: 4px;
-      border: 1px solid rgba(255,255,255,0.1);
+      border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.1));
     }
 
     .mode-btn {
       padding: 6px 14px;
       background: transparent;
       border: none;
-      color: #b3b3b3;
+      color: var(--vscode-foreground, #b3b3b3);
       font-size: 12px;
       font-weight: 500;
       border-radius: 6px;
       cursor: pointer;
       transition: all 0.2s ease;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
 
     .mode-btn:hover {
-      background: rgba(255,255,255,0.06);
-      color: #e6e6e6;
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+      color: var(--vscode-foreground, #e6e6e6);
     }
 
     .mode-btn.active {
-      background: linear-gradient(135deg, #1a73e8, #1559b3);
-      color: white;
+      background: var(--vscode-button-background, linear-gradient(135deg, #1a73e8, #1559b3));
+      color: var(--vscode-button-foreground, white);
       box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+    }
+
+    /* AI Response Loading Animation */
+    @keyframes typing {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 1; }
+    }
+
+    .ai-typing-indicator {
+      display: inline-flex;
+      gap: 4px;
+      padding: 14px 16px;
+      align-items: center;
+    }
+
+    .ai-typing-indicator span {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--vscode-textLink-foreground, #4db8ff);
+      animation: typing 1.4s infinite;
+    }
+
+    .ai-typing-indicator span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .ai-typing-indicator span:nth-child(3) {
+      animation-delay: 0.4s;
     }
 
     /* Enhanced Code Blocks */
