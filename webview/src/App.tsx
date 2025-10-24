@@ -17,6 +17,19 @@ import 'prismjs/components/prism-yaml';
 import 'prismjs/components/prism-bash';
 import 'prismjs/components/prism-sql';
 import 'prismjs/components/prism-markdown';
+import 'prismjs/components/prism-css';
+import 'prismjs/components/prism-scss';
+import 'prismjs/components/prism-less';
+import 'prismjs/components/prism-php';
+import 'prismjs/components/prism-ruby';
+import 'prismjs/components/prism-swift';
+import 'prismjs/components/prism-kotlin';
+import 'prismjs/components/prism-dart';
+import 'prismjs/components/prism-lua';
+import 'prismjs/components/prism-r';
+import 'prismjs/components/prism-perl';
+import 'prismjs/components/prism-docker';
+import 'prismjs/components/prism-graphql';
 import { professionalStyles } from './professional-styles';
 
 // Professional SVG Icons (Lucide-style)
@@ -377,8 +390,37 @@ export default function App() {
     
     // Handle code blocks with syntax highlighting
     html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
-      const language = lang || 'plaintext';
+      let language = lang || 'plaintext';
       const trimmedCode = code.trim();
+      
+      // Auto-detect language if not specified
+      if (!lang || lang === 'plaintext') {
+        language = detectLanguage(trimmedCode);
+      }
+      
+      // Normalize language aliases
+      const languageMap: Record<string, string> = {
+        'js': 'javascript',
+        'ts': 'typescript',
+        'py': 'python',
+        'rb': 'ruby',
+        'sh': 'bash',
+        'shell': 'bash',
+        'yml': 'yaml',
+        'md': 'markdown',
+        'cs': 'csharp',
+        'cpp': 'cpp',
+        'c++': 'cpp',
+        'kt': 'kotlin',
+        'rs': 'rust',
+        'go': 'go',
+        'java': 'java',
+        'php': 'php',
+        'swift': 'swift',
+        'dart': 'dart',
+      };
+      
+      language = languageMap[language.toLowerCase()] || language;
       
       // Apply Prism syntax highlighting if language is supported
       let highlighted = escapeHtml(trimmedCode);
@@ -424,6 +466,105 @@ export default function App() {
       .join('');
       
     return html;
+  }
+  
+  // Auto-detect programming language from code content
+  function detectLanguage(code: string): string {
+    const trimmed = code.trim();
+    
+    // TypeScript/JavaScript detection
+    if (/^(import|export|const|let|var|function|class|interface|type|enum)\s/m.test(trimmed)) {
+      if (/:\s*\w+(\[\])?(\s*=|\s*;|\s*\{)/m.test(trimmed) || /interface\s+\w+|type\s+\w+\s*=/m.test(trimmed)) {
+        return 'typescript';
+      }
+      return 'javascript';
+    }
+    
+    // React/JSX detection
+    if (/<\w+[^>]*>.*<\/\w+>/s.test(trimmed) || /React\./.test(trimmed)) {
+      if (/:\s*\w+(\[\])?/m.test(trimmed)) {
+        return 'tsx';
+      }
+      return 'jsx';
+    }
+    
+    // Python detection
+    if (/^(def|class|import|from|if __name__|print\()/m.test(trimmed)) {
+      return 'python';
+    }
+    
+    // Java detection
+    if (/^(public|private|protected|class|interface)\s+(class|interface|enum)/m.test(trimmed)) {
+      return 'java';
+    }
+    
+    // C/C++ detection
+    if (/#include\s*[<"]|int main\(|std::/m.test(trimmed)) {
+      return 'cpp';
+    }
+    
+    // C# detection
+    if (/^(using|namespace|public class|private class)/m.test(trimmed)) {
+      return 'csharp';
+    }
+    
+    // Go detection
+    if (/^(package|func|import \(|type\s+\w+\s+struct)/m.test(trimmed)) {
+      return 'go';
+    }
+    
+    // Rust detection
+    if (/^(fn|let mut|impl|pub fn|use\s+)/m.test(trimmed)) {
+      return 'rust';
+    }
+    
+    // PHP detection
+    if (/^<\?php|<\?=/m.test(trimmed)) {
+      return 'php';
+    }
+    
+    // Ruby detection
+    if (/^(def|class|module|require|attr_accessor)/m.test(trimmed)) {
+      return 'ruby';
+    }
+    
+    // CSS/SCSS detection
+    if (/\{[^}]*:[^;]+;/m.test(trimmed) && /^[.#]?\w+\s*\{/m.test(trimmed)) {
+      if (/\$\w+:|@import|@mixin|@include/m.test(trimmed)) {
+        return 'scss';
+      }
+      return 'css';
+    }
+    
+    // HTML detection
+    if (/^<!DOCTYPE html>|^<html/im.test(trimmed)) {
+      return 'html';
+    }
+    
+    // JSON detection
+    if (/^\{[\s\S]*\}$|^\[[\s\S]*\]$/m.test(trimmed)) {
+      try {
+        JSON.parse(trimmed);
+        return 'json';
+      } catch {}
+    }
+    
+    // YAML detection
+    if (/^[\w-]+:\s*[\w-]|^\s*-\s+\w+:/m.test(trimmed)) {
+      return 'yaml';
+    }
+    
+    // SQL detection
+    if (/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\s+/im.test(trimmed)) {
+      return 'sql';
+    }
+    
+    // Bash/Shell detection
+    if (/^#!\/bin\/(bash|sh)|^(echo|cd|ls|mkdir|rm)\s+/m.test(trimmed)) {
+      return 'bash';
+    }
+    
+    return 'plaintext';
   }
 
   function finalizeLastAssistant() {
@@ -747,6 +888,16 @@ export default function App() {
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
         </label>
+        {mode === 'agent' && (
+          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', opacity: 0.7, fontSize: '11px', alignItems: 'center' }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>Agent Mode: Can modify files</span>
+          </div>
+        )}
       </div>
       <div className={`layout ${historyOpen ? 'with-history' : ''}`}>
         <aside className="history" aria-label="Conversations">
@@ -861,12 +1012,64 @@ export default function App() {
             </div>
           )}
           <div id="content" ref={contentRef} className="content" aria-live="polite" />
+          {mode === 'agent' && (
+            <div style={{ 
+              padding: '8px 16px', 
+              background: 'var(--color-bg-secondary)', 
+              borderTop: '1px solid var(--color-border-subtle)',
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              fontSize: '12px'
+            }}>
+              <span style={{ color: 'var(--color-text-secondary)', marginRight: '8px' }}>Quick Actions:</span>
+              <button 
+                className="btn" 
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                onClick={() => setPrompt('Create a new React component')}
+              >
+                + Create Component
+              </button>
+              <button 
+                className="btn" 
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                onClick={() => setPrompt('Fix bugs in current file')}
+              >
+                🔧 Fix Bugs
+              </button>
+              <button 
+                className="btn" 
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                onClick={() => setPrompt('Add comprehensive error handling')}
+              >
+                🛡️ Add Error Handling
+              </button>
+              <button 
+                className="btn" 
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                onClick={() => setPrompt('Optimize performance of current code')}
+              >
+                ⚡ Optimize
+              </button>
+              <button 
+                className="btn" 
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                onClick={() => setPrompt('Add TypeScript types')}
+              >
+                📘 Add Types
+              </button>
+            </div>
+          )}
           <div className="composer">
         <textarea
           className="prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ask anything... Type @filename to attach files (e.g., @src/app.ts)"
+          placeholder={
+            mode === 'agent' 
+              ? "Agent Mode: Directly modify files! Try: 'create a Button.tsx component', 'fix the bug in @app.ts', 'add error handling to the current file'" 
+              : "Ask anything... Type @filename to attach files (e.g., @src/app.ts)"
+          }
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();

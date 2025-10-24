@@ -504,83 +504,129 @@ ${snapshot}`;
   }
 
   private async runAgentConversation(model: string, prompt: string) {
-    // NEW APPROACH: Detect file operations from user intent and execute them directly
-    // This is how Cursor actually works - it doesn't rely on the model to use tool syntax
+    // Enhanced agent mode - works like Cursor/Copilot
+    // Automatically detects file operations and applies them
     
+    // Get current editor context
+    const editor = vscode.window.activeTextEditor;
+    const currentFile = editor ? vscode.workspace.asRelativePath(editor.document.uri) : null;
+    
+    // Extract file mentions from @ syntax or detect from context
     const fileMentions = prompt.match(/@([\w\-\.\/\\]+)/g);
-    const mentionedFiles = fileMentions ? fileMentions.map(m => m.substring(1)) : [];
+    let mentionedFiles = fileMentions ? fileMentions.map(m => m.substring(1)) : [];
     
-    // Check if user wants to modify a file
-    const wantsToModify = /\b(remove|delete|clear|change|modify|edit|update|add|create|write)\b/i.test(prompt);
+    // If no @ mentions but we have an active editor, use current file
+    if (mentionedFiles.length === 0 && currentFile) {
+      mentionedFiles = [currentFile];
+    }
+    
+    // Detect user intent with better patterns
+    const wantsToCreate = /\b(create|new|add|make|generate)\s+(a\s+)?(file|component|module|class|function)/i.test(prompt);
+    const wantsToModify = /\b(change|modify|edit|update|fix|refactor|rewrite|improve|optimize)\b/i.test(prompt);
+    const wantsToDelete = /\b(remove|delete|clear)\b/i.test(prompt);
     const wantsToRead = /\b(show|read|see|view|display|what|content)\b/i.test(prompt);
     
-    // If user mentions a file and wants to modify it, execute the operation directly
+    // === HANDLE FILE CREATION ===
+    if (wantsToCreate) {
+      // Extract filename from prompt
+      const filenameMatch = prompt.match(/(?:create|new|add|make|generate)\s+(?:a\s+)?(?:file|component|module|class|function)?\s*(?:called|named)?\s*[`"]?([\w\-\.\/]+)[`"]?/i);
+      const newFileName = filenameMatch ? filenameMatch[1] : await vscode.window.showInputBox({ 
+        prompt: 'Enter filename',
+        placeHolder: 'e.g., components/Button.tsx'
+      });
+      
+      if (!newFileName) { return; }
+      
+      this.panel?.webview.postMessage({ type: 'chatStart', model });
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Creating ${newFileName}...\n\n` });
+      
+      // Ask AI to generate file content
+      const createPrompt = `Generate complete code for: ${prompt}
+
+OUTPUT RULES:
+- Output ONLY the code, no explanations
+- NO markdown code fences
+- Start directly with the code
+- Make it production-ready and well-structured`;
+
+      let content = '';
+      const messages: OllamaMessage[] = [{ role: 'user', content: createPrompt }];
+      
+      try {
+        await this.client.chat(model, messages, false, (token) => {
+          content += token;
+        }, this.controller?.signal);
+        
+        // Clean the response
+        content = content.trim().replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
+        
+        // Create the file
+        await this.executeTool({ 
+          cmd: 'writeFile', 
+          path: newFileName, 
+          content 
+        });
+        
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully created ${newFileName}!\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatDone', model });
+        
+        // Open the new file
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        if (ws) {
+          const uri = vscode.Uri.joinPath(ws.uri, newFileName);
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        }
+        return;
+      } catch (e) {
+        this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to create file: ${e}` });
+        return;
+      }
+    }
+    
+    // === HANDLE FILE MODIFICATION ===
     if (mentionedFiles.length > 0 && wantsToModify) {
       const targetFile = mentionedFiles[0];
       
       // Step 1: Read the file first
       this.panel?.webview.postMessage({ type: 'chatStart', model });
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Reading ${targetFile}...\n\n` });
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Reading ${targetFile}...\n\n` });
       
       let fileContent = '';
       try {
         const readResult = await this.executeTool({ cmd: 'readFile', path: targetFile });
         fileContent = readResult;
-        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✓ File read successfully\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `File read successfully\n\n` });
       } catch (e) {
         this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to read ${targetFile}: ${e}` });
         return;
       }
       
       // Step 2: Ask AI to generate the modified version
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Generating modified version...\n\n` });
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Generating modifications...\n\n` });
       
-      // Special handling: if user wants to remove ALL code, just write empty file
-      const wantsEmpty = /remove\s+all|delete\s+all|clear\s+all|empty/i.test(prompt);
-      
-      if (wantsEmpty) {
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Clearing ${targetFile}...\n\n` });
-        
-        await this.executeTool({ 
-          cmd: 'writeFile', 
-          path: targetFile, 
-          content: '// File cleared by user request\n' 
-        });
-        
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully cleared ${targetFile}!\n\n` });
-        this.panel?.webview.postMessage({ type: 'chatDone', model });
-        
-        // Open the file to show it's empty
-        const ws = vscode.workspace.workspaceFolders?.[0];
-        if (ws) {
-          const uri = vscode.Uri.joinPath(ws.uri, targetFile);
-          const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc, { preview: false });
-        }
-        return;
-      }
-      
-      // For other modifications, use AI
-      const modificationPrompt = `Given this file content, apply the user's request and output ONLY the modified code.
+      // Build a smart modification prompt
+      const modificationPrompt = `You are a code editor. Modify the following file based on the user's request.
 
-CURRENT FILE:
+CURRENT FILE (${targetFile}):
 ${fileContent}
 
 USER REQUEST: ${prompt}
 
-OUTPUT RULES:
-- Output ONLY code, no explanations
+INSTRUCTIONS:
+- Output ONLY the complete modified file content
 - NO markdown code fences (no \`\`\`)
-- NO "Here's the modified version" or similar text
+- NO explanations or comments about what you changed
 - Start directly with the code
+- Preserve existing code structure and style
+- Only change what's requested
 
-MODIFIED CODE:`;
+MODIFIED FILE:`;
 
       let modifiedContent = '';
       const messages: OllamaMessage[] = [{ role: 'user', content: modificationPrompt }];
       
       try {
-        // Don't show AI generation in chat - collect silently
         await this.client.chat(model, messages, false, (token) => {
           modifiedContent += token;
         }, this.controller?.signal);
@@ -599,7 +645,9 @@ MODIFIED CODE:`;
           /^Updated\s+code.*?:\s*/i,
           /^javascript\s*\n/i,
           /^typescript\s*\n/i,
-          /^python\s*\n/i
+          /^python\s*\n/i,
+          /^I'?ve\s+.*?:\s*/i,
+          /^The\s+modified.*?:\s*/i
         ];
         
         for (const pattern of preambles) {
@@ -609,7 +657,7 @@ MODIFIED CODE:`;
         modifiedContent = modifiedContent.trim();
         
         // Step 3: Write the modified file
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Writing changes to ${targetFile}...\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Writing changes to ${targetFile}...\n\n` });
         
         await this.executeTool({ 
           cmd: 'writeFile', 
@@ -617,7 +665,7 @@ MODIFIED CODE:`;
           content: modifiedContent 
         });
         
-  this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
         this.panel?.webview.postMessage({ type: 'chatDone', model });
         
         // Open the file to show the changes
@@ -631,6 +679,108 @@ MODIFIED CODE:`;
         return;
       } catch (e) {
         this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to modify file: ${e}` });
+        return;
+      }
+    }
+    
+    // === HANDLE FILE DELETION ===
+    if (mentionedFiles.length > 0 && wantsToDelete) {
+      const targetFile = mentionedFiles[0];
+      
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete ${targetFile}?`,
+        { modal: true },
+        'Delete'
+      );
+      
+      if (confirm === 'Delete') {
+        this.panel?.webview.postMessage({ type: 'chatStart', model });
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Deleting ${targetFile}...\n\n` });
+        
+        try {
+          await this.executeTool({ cmd: 'deleteFile', path: targetFile });
+          this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully deleted ${targetFile}!\n\n` });
+          this.panel?.webview.postMessage({ type: 'chatDone', model });
+        } catch (e) {
+          this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to delete: ${e}` });
+        }
+      }
+      return;
+    }
+    
+    // === HANDLE CURRENT FILE MODIFICATION (no @ mention, but has active editor) ===
+    if (wantsToModify && editor && !fileMentions) {
+      const targetFile = vscode.workspace.asRelativePath(editor.document.uri);
+      const fileContent = editor.document.getText();
+      const selection = editor.selection;
+      const hasSelection = !selection.isEmpty;
+      const selectedText = hasSelection ? editor.document.getText(selection) : '';
+      
+      this.panel?.webview.postMessage({ type: 'chatStart', model });
+      this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Modifying ${targetFile}...\n\n` });
+      
+      const modificationPrompt = hasSelection 
+        ? `You are a code editor. Modify ONLY the selected code based on the user's request.
+
+FULL FILE (${targetFile}):
+${fileContent}
+
+SELECTED CODE TO MODIFY:
+${selectedText}
+
+USER REQUEST: ${prompt}
+
+INSTRUCTIONS:
+- Output ONLY the modified version of the SELECTED code
+- NO markdown code fences
+- NO explanations
+- Preserve code style and structure
+
+MODIFIED CODE:`
+        : `You are a code editor. Modify the file based on the user's request.
+
+CURRENT FILE (${targetFile}):
+${fileContent}
+
+USER REQUEST: ${prompt}
+
+INSTRUCTIONS:
+- Output ONLY the complete modified file
+- NO markdown code fences
+- NO explanations
+- Preserve code style
+
+MODIFIED FILE:`;
+
+      let modifiedContent = '';
+      const messages: OllamaMessage[] = [{ role: 'user', content: modificationPrompt }];
+      
+      try {
+        await this.client.chat(model, messages, false, (token) => {
+          modifiedContent += token;
+        }, this.controller?.signal);
+        
+        // Clean response
+        modifiedContent = modifiedContent.trim().replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
+        
+        // Apply the edit
+        await editor.edit(editBuilder => {
+          if (hasSelection) {
+            editBuilder.replace(selection, modifiedContent);
+          } else {
+            const fullRange = new vscode.Range(
+              editor.document.positionAt(0),
+              editor.document.positionAt(fileContent.length)
+            );
+            editBuilder.replace(fullRange, modifiedContent);
+          }
+        });
+        
+        this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
+        this.panel?.webview.postMessage({ type: 'chatDone', model });
+        return;
+      } catch (e) {
+        this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to modify: ${e}` });
         return;
       }
     }
