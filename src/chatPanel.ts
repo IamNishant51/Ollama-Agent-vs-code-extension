@@ -13,8 +13,17 @@ export class OllamaChatPanel {
   private abortedForTool = false;
   private assistantBuffer = '';
   private convo: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
+  private lastActiveEditor: vscode.TextEditor | undefined;
 
-  constructor(private readonly extensionUri: vscode.Uri, private readonly client: OllamaClient) {}
+  constructor(private readonly extensionUri: vscode.Uri, private readonly client: OllamaClient) {
+    // Track the last active editor
+    this.lastActiveEditor = vscode.window.activeTextEditor;
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) {
+        this.lastActiveEditor = editor;
+      }
+    });
+  }
 
   // Allow extension to post messages into the chat webview
   public postMessage(msg: any) {
@@ -130,6 +139,51 @@ ${snapshot}`;
             await vscode.commands.executeCommand(id, ...args);
           } catch (e: any) {
             this.panel?.webview.postMessage({ type: 'error', message: String(e?.message || e) });
+          }
+          break;
+        }
+        case 'pickFiles': {
+          try {
+            const ws = vscode.workspace.workspaceFolders?.[0];
+            if (!ws) {
+              this.panel?.webview.postMessage({ type: 'error', message: 'No workspace folder open' });
+              break;
+            }
+            
+            // Find all files in workspace (excluding common ignore patterns) - Cursor-style
+            const allFiles = await vscode.workspace.findFiles(
+              '**/*',
+              '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/*.min.*,**/*.lock,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/*.ico,**/*.pdf,**/*.zip,**/*.jar,**/*.exe}',
+              500
+            );
+            
+            if (!allFiles || allFiles.length === 0) {
+              this.panel?.webview.postMessage({ type: 'error', message: 'No files found in workspace' });
+              break;
+            }
+            
+            // Convert to relative paths and create quick pick items
+            const items = allFiles.map(uri => {
+              const relativePath = vscode.workspace.asRelativePath(uri);
+              return {
+                label: relativePath,
+                description: uri.fsPath
+              };
+            });
+            
+            // Show quick pick with multi-select (like Cursor)
+            const selected = await vscode.window.showQuickPick(items, {
+              canPickMany: true,
+              placeHolder: 'Select files to add as context (type to filter)',
+              matchOnDescription: true
+            });
+            
+            if (selected && selected.length) {
+              const files = selected.map(item => item.label);
+              this.panel?.webview.postMessage({ type: 'filesPicked', files });
+            }
+          } catch (e: any) {
+            this.panel?.webview.postMessage({ type: 'error', message: 'File picker failed: ' + String(e?.message || e) });
           }
           break;
         }
@@ -339,41 +393,50 @@ ${snapshot}`;
         }
         case 'insertText': {
           const text: string = msg.text || '';
-          const editor = vscode.window.activeTextEditor;
-          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
-          const mode = cfg.get<string>('mode', 'read');
+          const mode: string = msg.mode || 'read';
+          console.log('insertText received - mode:', mode, 'text length:', text.length);
+          
+          // Use last active editor (before focus moved to chat panel)
+          const editor = this.lastActiveEditor || vscode.window.activeTextEditor;
+          
           if (mode !== 'agent') {
             vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to allow changes.');
             break;
           }
-          if (editor && text) {
-            await editor.edit((ed) => ed.insert(editor.selection.active, text));
+          if (!editor) {
+            vscode.window.showWarningMessage('No active editor. Please open a file first.');
+            break;
+          }
+          if (text) {
+            // Direct insert without AI
+            await this.directInsertCode(editor, text);
           }
           break;
         }
         case 'applyCode': {
           const text: string = msg.text || '';
-          const editor = vscode.window.activeTextEditor;
-          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
-          const mode = cfg.get<string>('mode', 'read');
+          const mode: string = msg.mode || 'read';
+          console.log('applyCode received - mode:', mode, 'text length:', text.length);
+          
+          // Use last active editor (before focus moved to chat panel)
+          const editor = this.lastActiveEditor || vscode.window.activeTextEditor;
+          
           if (mode !== 'agent') {
             vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply changes.');
             break;
           }
-          if (editor && text) {
-            await editor.edit((ed) => {
-              if (!editor.selection.isEmpty) {
-                ed.replace(editor.selection, text);
-              } else {
-                ed.insert(editor.selection.active, text);
-              }
-            });
+          if (!editor) {
+            vscode.window.showWarningMessage('No active editor. Please open a file first.');
+            break;
+          }
+          if (text) {
+            // Direct apply without AI
+            await this.directApplyCode(editor, text);
           }
           break;
         }
         case 'applyEdits': {
-          const cfg = vscode.workspace.getConfiguration('ollamaAgent');
-          const mode = cfg.get<string>('mode', 'read');
+          const mode: string = msg.mode || 'read'; // Get mode from message
           if (mode !== 'agent') {
             vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply edits.');
             break;
@@ -389,6 +452,30 @@ ${snapshot}`;
           } catch (e) {
             vscode.window.showErrorMessage('Failed to open file');
           }
+          break;
+        }
+        case 'explainSelection': {
+          await this.handleExplainCode();
+          break;
+        }
+        case 'fixCode': {
+          await this.handleFixCode();
+          break;
+        }
+        case 'optimizeCode': {
+          await this.handleOptimizeCode();
+          break;
+        }
+        case 'generateTests': {
+          await this.handleGenerateTests();
+          break;
+        }
+        case 'refactorCode': {
+          await this.handleRefactorCode();
+          break;
+        }
+        case 'addComments': {
+          await this.handleAddComments();
           break;
         }
       }
@@ -1009,6 +1096,233 @@ ASSISTANT: ${this.assistantBuffer}`;
     } catch (e: any) {
       return `Tool error: ${String(e?.message || e)}`;
     }
+  }
+
+  // Direct code insertion - Simple and fast like Cursor
+  private async directInsertCode(editor: vscode.TextEditor, newCode: string) {
+    const selection = editor.selection;
+    
+    vscode.window.showInformationMessage(`🤖 Inserting code...`);
+
+    try {
+      // Simple insert at cursor or after selection
+      await editor.edit((editBuilder) => {
+        if (!selection.isEmpty) {
+          // Insert after selection
+          editBuilder.insert(selection.end, '\n' + newCode);
+        } else {
+          // Insert at cursor
+          editBuilder.insert(selection.active, newCode);
+        }
+      });
+
+      vscode.window.showInformationMessage(`✅ Code inserted successfully!`);
+    } catch (error: any) {
+      vscode.window.showErrorMessage(`Failed to insert code: ${error.message}`);
+    }
+  }
+
+  // Direct code application - Simple and fast like Cursor
+  private async directApplyCode(editor: vscode.TextEditor, newCode: string) {
+    const document = editor.document;
+    const selection = editor.selection;
+
+    vscode.window.showInformationMessage(`🤖 Applying code...`);
+
+    try {
+      await editor.edit((editBuilder) => {
+        if (!selection.isEmpty) {
+          // Replace selected code
+          editBuilder.replace(selection, newCode);
+        } else {
+          // If no selection, replace entire file content (like Cursor does)
+          const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(document.getText().length)
+          );
+          editBuilder.replace(fullRange, newCode);
+        }
+      });
+
+      vscode.window.showInformationMessage(`✅ Code applied successfully!`);
+    } catch (error: any) {
+      vscode.window.showErrorMessage(`Failed to apply code: ${error.message}`);
+    }
+  }
+
+  // AI Code Action Handlers (Cursor/Copilot style features)
+  // These now prefill the chat and let the user send, ensuring proper context
+  private async handleExplainCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to explain code');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to explain or cursor will explain the whole file');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Explain this ${language} code from ${fileName}:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    // Show the panel and prefill
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
+  }
+
+  private async handleFixCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to fix code');
+      return;
+    }
+
+    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+    const mode = cfg.get<string>('mode', 'read');
+    if (mode !== 'agent') {
+      vscode.window.showInformationMessage('Switch to Agent mode to fix code (changes files)');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to fix');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Fix any bugs, errors, or issues in this ${language} code from ${fileName}:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
+  }
+
+  private async handleOptimizeCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to optimize code');
+      return;
+    }
+
+    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+    const mode = cfg.get<string>('mode', 'read');
+    if (mode !== 'agent') {
+      vscode.window.showInformationMessage('Switch to Agent mode to optimize code');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to optimize');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Optimize this ${language} code for better performance:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
+  }
+
+  private async handleGenerateTests() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to generate tests');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to generate tests for');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Generate comprehensive unit tests for this ${language} code from ${fileName}:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
+  }
+
+  private async handleRefactorCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to refactor code');
+      return;
+    }
+
+    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+    const mode = cfg.get<string>('mode', 'read');
+    if (mode !== 'agent') {
+      vscode.window.showInformationMessage('Switch to Agent mode to refactor code');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to refactor');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Refactor this ${language} code to improve readability and maintainability:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
+  }
+
+  private async handleAddComments() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('Open a file to add comments');
+      return;
+    }
+
+    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+    const mode = cfg.get<string>('mode', 'read');
+    if (mode !== 'agent') {
+      vscode.window.showInformationMessage('Switch to Agent mode to add comments');
+      return;
+    }
+
+    const selection = editor.selection;
+    const text = editor.document.getText(selection.isEmpty ? undefined : selection);
+    
+    if (!text.trim()) {
+      vscode.window.showInformationMessage('Select code to add comments to');
+      return;
+    }
+
+    const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+    const language = editor.document.languageId;
+    
+    const prompt = `Add comprehensive comments and documentation to this ${language} code:\n\n\`\`\`${language}\n${text}\n\`\`\``;
+    
+    this.show(vscode.ViewColumn.Beside);
+    this.prefill(prompt);
   }
 }
 

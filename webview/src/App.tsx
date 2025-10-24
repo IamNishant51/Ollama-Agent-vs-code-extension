@@ -97,6 +97,7 @@ export default function App() {
   const [port, setPort] = useState(11434);
   const [showSettings, setShowSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     injectStyles();
@@ -196,6 +197,10 @@ export default function App() {
           if ((msg as any).type === 'openReadmeGenerator') {
             setShowReadme(true);
           }
+          if ((msg as any).type === 'filesPicked' && Array.isArray((msg as any).files)) {
+            const picked: string[] = (msg as any).files;
+            setAttachedFiles((prev) => Array.from(new Set([...(prev || []), ...picked])));
+          }
           if ((msg as any).type === 'switchThread' && (msg as any).id) {
             switchThread((msg as any).id);
           }
@@ -213,6 +218,35 @@ export default function App() {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
+  // AI Code Action Handlers (Cursor/Copilot style)
+  function handleExplainCode() {
+    vscode.postMessage({ type: 'explainSelection' });
+  }
+
+  function handleFixCode() {
+    vscode.postMessage({ type: 'fixCode' });
+  }
+
+  function handleOptimizeCode() {
+    vscode.postMessage({ type: 'optimizeCode' });
+  }
+
+  function handleGenerateTests() {
+    vscode.postMessage({ type: 'generateTests' });
+  }
+
+  function handleRefactorCode() {
+    vscode.postMessage({ type: 'refactorCode' });
+  }
+
+  function handleAddComments() {
+    vscode.postMessage({ type: 'addComments' });
+  }
+
+  function handleAttachFiles() {
+    vscode.postMessage({ type: 'pickFiles' });
+  }
+
   function send() {
     const model = selected || (models[0] || '');
     const model2 = mode === 'combine' ? (selected2 || (models[1] || '')) : '';
@@ -224,7 +258,8 @@ export default function App() {
     
     // Extract @ file mentions from prompt
     const mentions = prompt.match(/@([\w\-\.\/]+)/g) || [];
-    const files = mentions.map(m => m.slice(1)); // Remove @ symbol
+    const mentionFiles = mentions.map(m => m.slice(1)); // Remove @ symbol
+    const allFiles = Array.from(new Set([...(attachedFiles || []), ...mentionFiles]));
     
     appendUser(prompt);
     
@@ -232,12 +267,11 @@ export default function App() {
     setStatus('Streaming');
     
     if (mode === 'combine') {
-      vscode.postMessage({ type: 'startChat', models: [model, model2], prompt, useChat, attachedFiles: files, mode: 'combine' });
+      vscode.postMessage({ type: 'startChat', models: [model, model2], prompt, useChat, attachedFiles: allFiles, mode: 'combine' });
     } else {
-      vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat, attachedFiles: files, mode });
+      vscode.postMessage({ type: 'startChat', models: [model], prompt, useChat, attachedFiles: allFiles, mode });
     }
     setPrompt('');
-    setAttachedFiles([]);
   }
 
   function stop() {
@@ -384,12 +418,19 @@ export default function App() {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  function decodeHTMLEntities(text: string): string {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+  }
+
   function renderMarkdownLike(text: string) {
-    // Escape HTML
-    let html = escapeHtml(text);
+    // First, extract and store code blocks before escaping HTML
+    const codeBlocks: Array<{placeholder: string, html: string}> = [];
+    let codeBlockIndex = 0;
     
-    // Handle code blocks with syntax highlighting
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
+    // Extract code blocks and replace with placeholders
+    let processedText = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
       let language = lang || 'plaintext';
       const trimmedCode = code.trim();
       
@@ -433,8 +474,19 @@ export default function App() {
         }
       }
       
-      return `<pre class="code-block" data-lang="${language}"><code class="language-${language}">${highlighted}</code></pre>`;
+      // Store the ORIGINAL RAW CODE (not escaped) in data attribute using base64 to avoid quote issues
+      const originalCodeBase64 = btoa(unescape(encodeURIComponent(trimmedCode)));
+      const codeBlockHtml = `<pre class="code-block" data-lang="${language}" data-code-base64="${originalCodeBase64}"><code class="language-${language}">${highlighted}</code></pre>`;
+      
+      const placeholder = `___CODEBLOCK_${codeBlockIndex}___`;
+      codeBlocks.push({ placeholder, html: codeBlockHtml });
+      codeBlockIndex++;
+      
+      return placeholder;
     });
+    
+    // Now escape HTML for the rest of the content
+    let html = escapeHtml(processedText);
     
     // Handle inline code
     html = html.replace(/`([^`]+)`/g, (_m, c) => `<code class="inline-code">${escapeHtml(c)}</code>`);
@@ -458,12 +510,17 @@ export default function App() {
     html = html
       .split(/\n\n+/)
       .map((p) => {
-        if (p.trim().startsWith('<pre') || p.trim().startsWith('<h') || p.trim().startsWith('<ul') || p.trim().startsWith('<li')) {
+        if (p.trim().startsWith('<pre') || p.trim().startsWith('<h') || p.trim().startsWith('<ul') || p.trim().startsWith('<li') || p.trim().startsWith('___CODEBLOCK_')) {
           return p;
         }
         return `<p>${p.replace(/\n/g, '<br/>')}</p>`;
       })
       .join('');
+    
+    // Restore code blocks
+    codeBlocks.forEach(({ placeholder, html: codeBlockHtml }) => {
+      html = html.replace(placeholder, codeBlockHtml);
+    });
       
     return html;
   }
@@ -579,7 +636,15 @@ export default function App() {
       const lang = pre.getAttribute('data-lang') || '';
       const header = document.createElement('div');
       header.className = 'code-header';
-      header.innerHTML = `<span class="code-lang">${lang}</span>`;
+      
+      const langSpan = document.createElement('span');
+      langSpan.className = 'code-lang';
+      langSpan.textContent = lang;
+      header.appendChild(langSpan);
+      
+      const buttonGroup = document.createElement('div');
+      buttonGroup.style.display = 'flex';
+      buttonGroup.style.gap = '6px';
       
       const copyBtn = document.createElement('button');
       copyBtn.className = 'copy-code-btn';
@@ -591,8 +656,8 @@ export default function App() {
         <span class="copy-text">Copy</span>
       `;
       copyBtn.addEventListener('click', async () => {
-        const codeEl = pre.querySelector('code');
-        const code = codeEl?.textContent || '';
+        const codeBase64 = pre.getAttribute('data-code-base64') || '';
+        const code = decodeURIComponent(escape(atob(codeBase64)));
         try { 
           await navigator.clipboard.writeText(code);
           copyBtn.classList.add('copied');
@@ -604,29 +669,41 @@ export default function App() {
           }, 2000);
         } catch {}
       });
-      header.appendChild(copyBtn);
+      buttonGroup.appendChild(copyBtn);
 
       const insertBtn = document.createElement('button');
       insertBtn.className = 'insert-code-btn';
       insertBtn.textContent = 'Insert';
       insertBtn.title = 'Insert at cursor';
       insertBtn.addEventListener('click', () => {
-        const codeEl = pre.querySelector('code');
-        const code = codeEl?.textContent || '';
-        try { vscode.postMessage({ type: 'insertText', text: code }); } catch {}
+        const codeBase64 = pre.getAttribute('data-code-base64') || '';
+        const code = decodeURIComponent(escape(atob(codeBase64)));
+        const modeBtn = document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement;
+        const currentMode = modeBtn?.dataset?.mode || 'read';
+        const currentModel = selected || (models.length > 0 ? models[0] : 'auto');
+        console.log('Insert clicked - Mode:', currentMode, 'Model:', currentModel, 'selected:', selected, 'models:', models);
+        // Send even if no model - backend will handle it
+        try { vscode.postMessage({ type: 'insertText', text: code, mode: currentMode, model: currentModel }); } catch {}
       });
-      header.appendChild(insertBtn);
+      buttonGroup.appendChild(insertBtn);
 
       const applyBtn = document.createElement('button');
       applyBtn.className = 'apply-code-btn';
       applyBtn.textContent = 'Apply';
       applyBtn.title = 'Apply (replace selection)';
       applyBtn.addEventListener('click', () => {
-        const codeEl = pre.querySelector('code');
-        const code = codeEl?.textContent || '';
-        try { vscode.postMessage({ type: 'applyCode', text: code }); } catch {}
+        const codeBase64 = pre.getAttribute('data-code-base64') || '';
+        const code = decodeURIComponent(escape(atob(codeBase64)));
+        const modeBtn = document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement;
+        const currentMode = modeBtn?.dataset?.mode || 'read';
+        const currentModel = selected || (models.length > 0 ? models[0] : 'auto');
+        console.log('Apply clicked - Mode:', currentMode, 'Model:', currentModel, 'selected:', selected, 'models:', models);
+        // Send even if no model - backend will handle it
+        try { vscode.postMessage({ type: 'applyCode', text: code, mode: currentMode, model: currentModel }); } catch {}
       });
-      header.appendChild(applyBtn);
+      buttonGroup.appendChild(applyBtn);
+      
+      header.appendChild(buttonGroup);
       pre.insertBefore(header, pre.firstChild);
     });
 
@@ -671,12 +748,16 @@ export default function App() {
         const apply = document.createElement('button');
         apply.className = 'send';
         apply.textContent = 'Apply edits';
-        apply.addEventListener('click', () => vscode.postMessage({ type: 'applyEdits', payload }));
+        apply.addEventListener('click', () => {
+          const currentMode = (document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement)?.dataset?.mode || 'read';
+          vscode.postMessage({ type: 'applyEdits', payload, mode: currentMode });
+        });
         actions.appendChild(review);
         actions.appendChild(apply);
         lastAssistant.parentElement?.appendChild(actions);
-        if (mode === 'agent') {
-          vscode.postMessage({ type: 'applyEdits', payload });
+        const currentMode = (document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement)?.dataset?.mode || 'read';
+        if (currentMode === 'agent') {
+          vscode.postMessage({ type: 'applyEdits', payload, mode: currentMode });
         }
       }
     } catch {}
@@ -826,6 +907,71 @@ export default function App() {
           {(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}
         </span>
         <span className="spacer" />
+        
+        {/* AI Code Actions - Cursor/Copilot style */}
+        <button className="btn" onClick={handleExplainCode} title="Explain selected code">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </span>
+          <span className="btn-text">Explain</span>
+        </button>
+        
+        <button className="btn" onClick={handleFixCode} title="Fix issues in code">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <path d="M14 2v6h6"/>
+              <path d="M12 18v-6"/>
+              <path d="m9 15 3 3 3-3"/>
+            </svg>
+          </span>
+          <span className="btn-text">Fix</span>
+        </button>
+        
+        <button className="btn" onClick={handleOptimizeCode} title="Optimize code performance">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </span>
+          <span className="btn-text">Optimize</span>
+        </button>
+        
+        <button className="btn" onClick={handleGenerateTests} title="Generate unit tests">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+          </span>
+          <span className="btn-text">Tests</span>
+        </button>
+        
+        <button className="btn" onClick={handleRefactorCode} title="Refactor code">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 20v-6M6 20V10M18 20V4"/>
+              <circle cx="12" cy="8" r="2"/>
+              <circle cx="6" cy="4" r="2"/>
+              <circle cx="18" cy="20" r="2"/>
+            </svg>
+          </span>
+          <span className="btn-text">Refactor</span>
+        </button>
+        
+        <button className="btn" onClick={handleAddComments} title="Add comments">
+          <span className="btn-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </span>
+          <span className="btn-text">Comment</span>
+        </button>
+        
         <button className="btn" onClick={() => setShowReadme((v) => !v)}>
           <span className="btn-icon" aria-hidden="true">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -864,7 +1010,7 @@ export default function App() {
           <span className="btn-text">New Chat</span>
         </button>
         <div className="mode-toggle">
-          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} onClick={() => toggleMode('read')}>
+          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} data-mode="read" onClick={() => toggleMode('read')}>
             <span className="btn-icon" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2 7a4 4 0 0 1 4-4h6v18H6a4 4 0 0 1-4-4Z"/>
@@ -873,7 +1019,7 @@ export default function App() {
             </span>
             <span className="btn-text">Read</span>
           </button>
-          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} onClick={() => toggleMode('agent')}>
+          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} data-mode="agent" onClick={() => toggleMode('agent')}>
             <span className="btn-icon" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="11" width="18" height="10" rx="2"/>
@@ -888,6 +1034,18 @@ export default function App() {
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
         </label>
+        <button 
+          className="btn" 
+          onClick={() => setShowHelp(!showHelp)}
+          title="Show keyboard shortcuts and help"
+          style={{ padding: '6px 12px' }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </button>
         {mode === 'agent' && (
           <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', opacity: 0.7, fontSize: '11px', alignItems: 'center' }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -960,6 +1118,71 @@ export default function App() {
           </div>
         </aside>
         <main className="chat">
+          {showHelp && (
+            <div className="readme-form" style={{ maxWidth: '700px', margin: '20px auto' }}>
+              <div className="readme-header">
+                <h3>🚀 Cursor/Copilot Features & Shortcuts</h3>
+                <button className="close-btn" onClick={() => setShowHelp(false)} title="Close" aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18 6 6 18"/>
+                    <path d="M6 6l12 12"/>
+                  </svg>
+                </button>
+              </div>
+              <div style={{ padding: '20px', fontSize: '13px', lineHeight: '1.6' }}>
+                <h4 style={{ marginTop: 0, color: 'var(--color-accent)' }}>🎯 Quick Actions (Toolbar)</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
+                  <li><strong>Explain:</strong> Get a clear explanation of selected code</li>
+                  <li><strong>Fix:</strong> Automatically fix bugs and issues in your code</li>
+                  <li><strong>Optimize:</strong> Improve performance and efficiency</li>
+                  <li><strong>Tests:</strong> Generate comprehensive unit tests</li>
+                  <li><strong>Refactor:</strong> Improve code structure and readability</li>
+                  <li><strong>Comment:</strong> Add documentation and comments</li>
+                </ul>
+
+                <h4 style={{ color: 'var(--color-accent)' }}>🤖 Agent Mode Features</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
+                  <li><strong>Create files:</strong> "create a Button.tsx component"</li>
+                  <li><strong>Modify files:</strong> "fix bugs in @app.ts" or "add error handling to current file"</li>
+                  <li><strong>Delete files:</strong> "delete the old config.json"</li>
+                  <li><strong>@mentions:</strong> Reference specific files with @ (e.g., @src/utils.ts)</li>
+                  <li><strong>Current file:</strong> Agent automatically works with your active editor</li>
+                </ul>
+
+                <h4 style={{ color: 'var(--color-accent)' }}>⌨️ Keyboard Shortcuts</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
+                  <li><strong>Enter:</strong> Send message</li>
+                  <li><strong>Shift + Enter:</strong> New line in message</li>
+                  <li><strong>Ctrl+Alt+K</strong> (Cmd+Alt+K on macOS): Open chat</li>
+                  <li><strong>Ctrl+Alt+E:</strong> Explain selection</li>
+                  <li><strong>Ctrl+Alt+T:</strong> Generate tests</li>
+                </ul>
+
+                <h4 style={{ color: 'var(--color-accent)' }}>💡 Slash Commands</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
+                  <li><strong>/explain:</strong> Explain selection</li>
+                  <li><strong>/tests:</strong> Generate tests</li>
+                  <li><strong>/fix:</strong> Fix issues</li>
+                  <li><strong>/doc:</strong> Add documentation</li>
+                  <li><strong>/commit:</strong> Generate commit message</li>
+                </ul>
+
+                <h4 style={{ color: 'var(--color-accent)' }}>📎 Context Files</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '20px' }}>
+                  <li><strong>@filename:</strong> Type @ followed by filename in your message</li>
+                  <li><strong>📎 Button:</strong> Click the paperclip button to add files manually</li>
+                  <li><strong>Auto-context:</strong> Files are automatically read and included in prompts</li>
+                </ul>
+
+                <h4 style={{ color: 'var(--color-accent)' }}>🔄 Modes</h4>
+                <ul style={{ paddingLeft: '20px', marginBottom: '0' }}>
+                  <li><strong>Read Mode:</strong> View-only, no file modifications</li>
+                  <li><strong>Agent Mode:</strong> Full file manipulation capabilities</li>
+                  <li><strong>Combine Mode:</strong> Use two AI models together for better results</li>
+                </ul>
+              </div>
+            </div>
+          )}
           {showReadme && (
             <div className="readme-form">
               <div className="readme-header">
@@ -1060,14 +1283,80 @@ export default function App() {
               </button>
             </div>
           )}
+          
+          {/* Context Files Display */}
+          {attachedFiles.length > 0 && (
+            <div style={{
+              padding: '8px 16px',
+              background: 'var(--color-bg-secondary)',
+              borderTop: '1px solid var(--color-border-subtle)',
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              alignItems: 'center'
+            }}>
+              <span style={{ color: 'var(--color-text-secondary)', fontSize: '12px' }}>Context Files:</span>
+              {attachedFiles.map((file, idx) => (
+                <div key={idx} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '4px 8px',
+                  background: 'var(--color-bg-primary)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: '4px',
+                  fontSize: '11px'
+                }}>
+                  <span>📄 {file}</span>
+                  <button
+                    onClick={() => setAttachedFiles(attachedFiles.filter((_, i) => i !== idx))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--color-text-secondary)',
+                      cursor: 'pointer',
+                      padding: '0 4px',
+                      fontSize: '14px'
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <button
+                className="btn"
+                style={{ padding: '2px 8px', fontSize: '11px' }}
+                onClick={() => setAttachedFiles([])}
+              >
+                Clear All
+              </button>
+            </div>
+          )}
+          
           <div className="composer">
+            <button
+              className="btn"
+              style={{ 
+                padding: '8px',
+                minWidth: '40px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              title="Add context file (use @filename in your message)"
+              onClick={handleAttachFiles}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+            </button>
         <textarea
           className="prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder={
             mode === 'agent' 
-              ? "Agent Mode: Directly modify files! Try: 'create a Button.tsx component', 'fix the bug in @app.ts', 'add error handling to the current file'" 
+              ? "Agent Mode" 
               : "Ask anything... Type @filename to attach files (e.g., @src/app.ts)"
           }
           onKeyDown={(e) => {

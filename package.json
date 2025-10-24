@@ -232,6 +232,28 @@
         "title": "Ollama Agent: Fix This Problem"
       }
     ],
+    "keybindings": [
+      {
+        "command": "ollamaAgent.chat",
+        "key": "ctrl+alt+k",
+        "when": "!inputFocus"
+      },
+      {
+        "command": "ollamaAgent.chat",
+        "key": "cmd+alt+k",
+        "when": "!inputFocus"
+      },
+      {
+        "command": "ollamaAgent.explainSelection",
+        "key": "ctrl+alt+e",
+        "when": "editorHasSelection && editorTextFocus"
+      },
+      {
+        "command": "ollamaAgent.generateTests",
+        "key": "ctrl+alt+t",
+        "when": "editorTextFocus"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {

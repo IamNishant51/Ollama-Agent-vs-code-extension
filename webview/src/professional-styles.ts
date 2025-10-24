@@ -385,30 +385,30 @@ export const professionalStyles = `
   .bubble {
     position: relative;
     max-width: 100%;
-    padding: 0;
+    padding: var(--spacing-md);
     font-size: var(--font-size-md);
     line-height: 1.7;
-    border-radius: 0;
+    border-radius: var(--border-radius-md);
     word-wrap: break-word;
     overflow-wrap: break-word;
     color: var(--color-text-primary);
   }
 
   .bubble.user {
-    align-self: flex-start;
-    background: transparent;
-    color: var(--color-text-primary);
-    margin: 0;
-    padding: 8px 0;
-    font-weight: 600;
+    align-self: flex-end;
+    background: var(--color-button-primary-bg);
+    color: var(--color-button-primary-fg);
+    margin-left: auto;
+    max-width: 85%;
+    font-weight: 500;
   }
 
   .bubble.assistant {
     align-self: flex-start;
-    background: transparent;
-    border: none;
+    background: var(--color-input-bg);
+    border: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    padding: 12px 0;
+    padding: var(--spacing-md);
   }
 
   /* === COPY BUTTON === */
