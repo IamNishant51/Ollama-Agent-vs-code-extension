@@ -586,7 +586,7 @@ export default function App() {
   }
 
   function appendAssistantChunk(text: string) {
-    if (!lastAssistant) appendAssistant(undefined, true);
+    if (!lastAssistant) appendAssistant(undefined, applying ? false : true);
     if (lastAssistant!.classList.contains('loading')) {
       lastAssistant!.classList.remove('loading');
       lastAssistant!.innerHTML = ''; // Clear typing indicator
@@ -981,6 +981,8 @@ export default function App() {
         const currentModel = selected || (models.length > 0 ? models[0] : '');
         if (DEBUG) console.log('Insert clicked - Mode:', currentMode, 'Model:', currentModel || '(none)', 'selected:', selected, 'models:', models);
         try { startActivity('insert-' + Date.now(), 'Inserting code…', { autoDoneAfter: 900, autoRemoveAfter: 700 }); } catch {}
+        // Distinct animation overlay for Insert
+        try { showApplyOverlay(); } catch {}
         // Send even if no model - backend will handle it
         const payload: any = { type: 'insertText', text: code, mode: currentMode };
         if (currentModel) payload.model = currentModel;
