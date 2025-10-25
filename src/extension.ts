@@ -56,8 +56,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   const chatPanel = new OllamaChatPanel(context.extensionUri, client);
 
-  // Shared in-memory store for chat history across views
-  let latestThreadsState: { threads: any[]; currentId: string } | undefined = context.globalState.get('ollamaAgent.threadsState');
+  // Shared in-memory store for chat history across views (persisted in globalState)
+  let latestThreadsState: { threads: any[]; currentId: string; historyOpen?: boolean; autoHideHistory?: boolean; compactTables?: boolean; stripedTables?: boolean } | undefined = context.globalState.get('ollamaAgent.threadsState');
 
   // Build initial project index in background
   const enableIndex = vscode.workspace.getConfiguration('ollamaAgent').get<boolean>('enableProjectIndex', true);
@@ -478,6 +478,15 @@ export function activate(context: vscode.ExtensionContext) {
         chatPanel.close();
       } else {
         chatPanel.show(vscode.ViewColumn.Beside);
+        // Push saved threads/settings to chat panel immediately after opening
+        try {
+          if (!latestThreadsState) {
+            latestThreadsState = context.globalState.get('ollamaAgent.threadsState');
+          }
+          if (latestThreadsState) {
+            chatPanel.postMessage({ type: 'threadsState', ...latestThreadsState });
+          }
+        } catch {}
       }
     })
   );
@@ -564,12 +573,21 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Relay thread updates from the chat webview to the left view and persist
   context.subscriptions.push(
-    vscode.commands.registerCommand('ollamaAgent.threadsUpdate', async (payload: { threads: any[]; currentId: string }) => {
+    vscode.commands.registerCommand('ollamaAgent.threadsUpdate', async (payload: { threads: any[]; currentId: string; historyOpen?: boolean; autoHideHistory?: boolean; compactTables?: boolean; stripedTables?: boolean }) => {
       try {
-        latestThreadsState = { threads: payload?.threads || [], currentId: payload?.currentId || '' };
+        latestThreadsState = {
+          threads: payload?.threads || [],
+          currentId: payload?.currentId || '',
+          historyOpen: payload?.historyOpen,
+          autoHideHistory: payload?.autoHideHistory,
+          compactTables: payload?.compactTables,
+          stripedTables: payload?.stripedTables,
+        };
         await context.globalState.update('ollamaAgent.threadsState', latestThreadsState);
         // push to left panel if visible
         try { (chatProvider as any)?.postMessage?.({ type: 'threadsState', ...latestThreadsState }); } catch {}
+        // also push to chat panel webview if visible
+        try { chatPanel.postMessage({ type: 'threadsState', ...(latestThreadsState || { threads: [], currentId: '' }) }); } catch {}
       } catch {}
     })
   );
@@ -580,7 +598,9 @@ export function activate(context: vscode.ExtensionContext) {
       if (!latestThreadsState) {
         latestThreadsState = context.globalState.get('ollamaAgent.threadsState');
       }
-      try { (chatProvider as any)?.postMessage?.({ type: 'threadsState', ...(latestThreadsState || { threads: [], currentId: '' }) }); } catch {}
+      const payload = latestThreadsState || { threads: [], currentId: '' } as any;
+      try { (chatProvider as any)?.postMessage?.({ type: 'threadsState', ...payload }); } catch {}
+      try { chatPanel.postMessage({ type: 'threadsState', ...payload }); } catch {}
     })
   );
 

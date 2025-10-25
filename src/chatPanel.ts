@@ -14,6 +14,12 @@ export class OllamaChatPanel {
   private assistantBuffer = '';
   private convo: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
   private lastActiveEditor: vscode.TextEditor | undefined;
+  // Track pending inline apply confirmations: id -> { uri, original }
+  private pendingApply = new Map<string, { uri: vscode.Uri; original: string }>();
+  // Inline diff decorations for Accept/Decline review
+  private addedDecoration?: vscode.TextEditorDecorationType;
+  private removedDecoration?: vscode.TextEditorDecorationType;
+  private decoratedEditor?: vscode.TextEditor;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly client: OllamaClient) {
     // Track the last active editor
@@ -27,6 +33,145 @@ export class OllamaChatPanel {
         }
       }
     });
+  }
+  private ensureEditorVisible(doc: vscode.TextDocument, reveal?: vscode.Range) {
+    const alreadyVisible = vscode.window.visibleTextEditors.some(e => e.document.uri.toString() === doc.uri.toString());
+    if (!alreadyVisible) {
+      return vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+    }
+    const ed = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === doc.uri.toString());
+    if (ed && reveal) {
+      try { ed.revealRange(reveal, vscode.TextEditorRevealType.InCenterIfOutsideViewport); } catch {}
+    }
+    return ed;
+  }
+
+  private initDecorations() {
+    if (!this.addedDecoration) {
+      this.addedDecoration = vscode.window.createTextEditorDecorationType({
+        isWholeLine: true,
+        backgroundColor: 'rgba(46,160,67,0.25)',
+        border: '1px solid rgba(46,160,67,0.70)',
+        overviewRulerColor: '#2ea043',
+        overviewRulerLane: vscode.OverviewRulerLane.Full
+      });
+    }
+    if (!this.removedDecoration) {
+      this.removedDecoration = vscode.window.createTextEditorDecorationType({
+        isWholeLine: true,
+        backgroundColor: 'rgba(248,81,73,0.12)',
+        border: '1px solid rgba(248,81,73,0.55)',
+        overviewRulerColor: '#f85149',
+        overviewRulerLane: vscode.OverviewRulerLane.Full
+      });
+    }
+  }
+
+  private clearInlineDiffDecorations() {
+    try {
+      if (this.decoratedEditor && this.addedDecoration) {
+        this.decoratedEditor.setDecorations(this.addedDecoration, []);
+      }
+      if (this.decoratedEditor && this.removedDecoration) {
+        this.decoratedEditor.setDecorations(this.removedDecoration, []);
+      }
+    } catch {}
+    this.decoratedEditor = undefined;
+  }
+
+  private showInlineDiffDecorations(editor: vscode.TextEditor, original: string, updated: string) {
+    this.initDecorations();
+    this.decoratedEditor = editor;
+    const doc = editor.document;
+    // Line-level diff highlighting: green for added lines, red ghost for removed lines
+    // Compute prefix/suffix to find changed span
+    if (original === updated) { this.clearInlineDiffDecorations(); return; }
+    const origLen = original.length;
+    const updLen = updated.length;
+    let i = 0;
+    const maxPrefix = Math.min(origLen, updLen);
+    while (i < maxPrefix && original.charCodeAt(i) === updated.charCodeAt(i)) {
+      i++;
+    }
+    let suffix = 0;
+    while (
+      suffix < (origLen - i) &&
+      suffix < (updLen - i) &&
+      original.charCodeAt(origLen - 1 - suffix) === updated.charCodeAt(updLen - 1 - suffix)
+    ) {
+      suffix++;
+    }
+    const startOffset = i;
+    const endOffsetOrig = origLen - suffix;
+    const inserted = updated.slice(i, updLen - suffix);
+    const removedSlice = original.slice(i, endOffsetOrig);
+
+    // Build line arrays for diff within the changed block
+    const origBlockLines = removedSlice.split(/\r?\n/);
+    const newBlockLines = inserted.split(/\r?\n/);
+
+    // Compute a simple LCS to identify added/removed lines
+    const lcsTable: number[][] = Array.from({ length: origBlockLines.length + 1 }, () => Array(newBlockLines.length + 1).fill(0));
+    for (let a = origBlockLines.length - 1; a >= 0; a--) {
+      for (let b = newBlockLines.length - 1; b >= 0; b--) {
+        if (origBlockLines[a] === newBlockLines[b]) {
+          lcsTable[a][b] = 1 + lcsTable[a + 1][b + 1];
+        } else {
+          lcsTable[a][b] = Math.max(lcsTable[a + 1][b], lcsTable[a][b + 1]);
+        }
+      }
+    }
+    const removedLines: string[] = [];
+    const addedLineIndices: number[] = [];
+    let a = 0, b = 0;
+    while (a < origBlockLines.length && b < newBlockLines.length) {
+      if (origBlockLines[a] === newBlockLines[b]) { a++; b++; }
+      else if (lcsTable[a + 1][b] >= lcsTable[a][b + 1]) { removedLines.push(origBlockLines[a]); a++; }
+      else { addedLineIndices.push(b); b++; }
+    }
+    while (a < origBlockLines.length) { removedLines.push(origBlockLines[a]); a++; }
+    while (b < newBlockLines.length) { addedLineIndices.push(b); b++; }
+
+    // Create decorations for added lines: mark each added line range using line numbers
+    const addOpts: vscode.DecorationOptions[] = [];
+    const startPos = doc.positionAt(startOffset);
+    const startLine = startPos.line;
+    for (const idx of addedLineIndices) {
+      const lineNum = startLine + idx;
+      if (lineNum >= 0 && lineNum < doc.lineCount) {
+        const lineRange = doc.lineAt(lineNum).range;
+        addOpts.push({ range: lineRange });
+      }
+    }
+
+    // Create ghost decorations for removed lines: show them in red just before the changed block
+    const remOpts: vscode.DecorationOptions[] = [];
+    if (removedLines.length > 0) {
+      // Show a clear red note on the first changed line about how many lines were removed
+      const anchorLine = startLine;
+      const anchorRange = (anchorLine >= 0 && anchorLine < doc.lineCount)
+        ? doc.lineAt(anchorLine).range
+        : new vscode.Range(startPos, startPos);
+      remOpts.push({
+        range: anchorRange,
+        renderOptions: {
+          after: {
+            contentText: `   – removed ${removedLines.length} line${removedLines.length === 1 ? '' : 's'}`,
+            color: '#f85149',
+            margin: '0 0 0 8px'
+          }
+        }
+      });
+    }
+
+    try {
+      if (this.addedDecoration) { editor.setDecorations(this.addedDecoration, addOpts); }
+      if (this.removedDecoration) { editor.setDecorations(this.removedDecoration, remOpts); }
+    } catch {}
+
+    // Reveal the beginning of the changed span
+    const revealRange = addOpts[0]?.range || new vscode.Range(startPos, startPos);
+    try { editor.revealRange(revealRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport); } catch {}
   }
 
   // Allow extension to post messages into the chat webview
@@ -252,6 +397,12 @@ ${snapshot}`;
           this.panel?.webview.postMessage({ type: 'config', mode, host, port, apiKey });
           break;
         }
+        case 'requestThreads': {
+          try {
+            await vscode.commands.executeCommand('ollamaAgent.requestThreads');
+          } catch {}
+          break;
+        }
         case 'updateConfig': {
           try {
             const cfg = vscode.workspace.getConfiguration('ollamaAgent');
@@ -361,7 +512,7 @@ ${snapshot}`;
               this.panel?.webview.postMessage({ type: 'chatStart', model: m });
               this.panel?.webview.postMessage({ type: 'agentActivity', id: `apply-${Date.now()}`, text: `Applying requested changes to ${direct.summary}…` });
               await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', { changes: direct.changes });
-              // Open the first edited file to show the result
+              // Reveal the first edited file if not already visible
               const first = direct.changes[0];
               if (first?.uri) {
                 try {
@@ -371,7 +522,7 @@ ${snapshot}`;
                     uri = vscode.Uri.joinPath(ws.uri, first.uri.replace(/^\/+/, ''));
                   }
                   const doc = await vscode.workspace.openTextDocument(uri);
-                  await vscode.window.showTextDocument(doc, { preview: false });
+                  this.ensureEditorVisible(doc);
                 } catch {}
               }
               // Provide a concise assistant summary to populate the bubble
@@ -466,7 +617,8 @@ ${snapshot}`;
         case 'applyCode': {
           const snippet: string = msg.text || '';
           const cfg = vscode.workspace.getConfiguration('ollamaAgent');
-          const previewAlways = cfg.get<boolean>('applyPreviewAlways', true);
+          const previewAlways = cfg.get<boolean>('applyPreviewAlways', false);
+          const inlineConfirm = cfg.get<boolean>('applyConfirmInline', true);
           const largeThreshold = cfg.get<number>('largeFileThresholdBytes', 200000);
           const effectiveMode = cfg.get<string>('mode', 'read');
           console.log('applyCode received - uiMode:', msg.mode, 'effectiveMode:', effectiveMode, 'text length:', snippet.length);
@@ -487,6 +639,37 @@ ${snapshot}`;
           const filePath = vscode.workspace.asRelativePath(document.uri);
           const language = document.languageId;
           const original = document.getText();
+
+          // Early full-file snippet detection: bypass AI merge if the snippet clearly represents a whole file
+          const cleanedSnippet = String(snippet || '').replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
+          try {
+            const isFull = this.snippetLooksLikeFullFile(cleanedSnippet, original, language);
+            if (inlineConfirm && isFull) {
+              // Resolve model label for consistent bubbles (even though we won't call the model)
+              let resolvedModel: string = '';
+              try {
+                const incoming = String(msg.model || '').trim();
+                const isAuto = /^auto(?::.*)?$/i.test(incoming);
+                resolvedModel = isAuto ? '' : incoming;
+                if (!resolvedModel) {
+                  resolvedModel = this.currentModel || (await this.client.listModels())[0] || '';
+                }
+              } catch {}
+              const modelLabel = resolvedModel || 'model';
+              this.panel?.webview.postMessage({ type: 'chatStart', model: modelLabel });
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `gen-${Date.now()}`, text: `Applying full-file snippet to ${filePath}…` });
+              const id = `apply-${Date.now()}`;
+              this.pendingApply.set(id, { uri: document.uri, original });
+              const updated = await this.applySnippetUnsaved(editor, cleanedSnippet);
+              this.ensureEditorVisible(document);
+              const ed = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === document.uri.toString()) || editor;
+              this.showInlineDiffDecorations(ed, original, updated);
+              this.panel?.webview.postMessage({ type: 'applyConfirm', id, file: filePath });
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `🔁 Replaced entire file with the provided snippet (unsaved). Accept to keep or Decline to revert.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+              break;
+            }
+          } catch {}
           // Start UI feedback
           let resolvedModel: string = '';
           try {
@@ -533,7 +716,7 @@ REQUIREMENTS:
             merged = (merged || '').trim().replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
             if (!merged) { throw new Error('Model returned empty content'); }
 
-            // Always preview before writing; for very large files, create a minimal range edit
+            // Choose flow based on settings
             const openPreview = async () => {
               const uriStr = document.uri.toString();
               let changes: any[] = [];
@@ -557,16 +740,53 @@ REQUIREMENTS:
               this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ Opened a preview to apply changes to ${filePath}.` });
               this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
             };
+            const doInlineConfirm = async () => {
+              const id = `apply-${Date.now()}`;
+              // Stash original for potential revert
+              this.pendingApply.set(id, { uri: document.uri, original });
+              // Apply minimal or full edit, but DO NOT save yet
+              const big = Buffer.byteLength(original, 'utf8') >= largeThreshold;
+              await editor.edit((eb) => {
+                if (big) {
+                  const e = computeMinimalRangeEdit(document, original, merged);
+                  if (e) {
+                    const r = new vscode.Range(
+                      new vscode.Position(e.range.start.line, e.range.start.character),
+                      new vscode.Position(e.range.end.line, e.range.end.character)
+                    );
+                    eb.replace(r, e.newText);
+                  }
+                } else {
+                  const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
+                  eb.replace(full, merged);
+                }
+              });
+              // Reveal the editor position after edit without reopening duplicate tabs
+              this.ensureEditorVisible(document);
+              // Show inline decorations for changed span
+              const ed = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === document.uri.toString()) || editor;
+              this.showInlineDiffDecorations(ed, original, merged);
+              // Ask the webview to show Accept / Decline inline controls
+              this.panel?.webview.postMessage({ type: 'applyConfirm', id, file: filePath });
+              // Provide a concise assistant note
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `🔍 Review changes to ${filePath}. Choose Accept to keep or Decline to undo.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+            };
 
-            if (previewAlways) {
+            // Inline confirm takes priority: behave like Copilot/Cursor (edit unsaved + confirm)
+            if (inlineConfirm) {
+              await doInlineConfirm();
+            } else if (previewAlways) {
               await openPreview();
             } else {
-              // Fallback path: direct write (not default)
+              // Direct write and save (rare case if both features disabled)
               this.panel?.webview.postMessage({ type: 'agentActivity', id: `write-${Date.now()}`, text: `Writing changes to ${filePath}…` });
               await editor.edit((eb) => {
                 const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
                 eb.replace(full, merged);
               });
+              try { await document.save(); } catch {}
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `saved-${Date.now()}`, text: 'Saved changes' });
               this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `✅ Applied snippet to ${filePath}.` });
               this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
             }
@@ -578,8 +798,20 @@ REQUIREMENTS:
               try {
                 const cfg2 = vscode.workspace.getConfiguration('ollamaAgent');
                 const preview = cfg2.get<boolean>('previewOnFallback', true);
+                const inlineConfirm2 = cfg2.get<boolean>('applyConfirmInline', true);
                 const cleaned = String(snippet || '').replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
-                if (preview) {
+                if (inlineConfirm2) {
+                  // Apply cleaned snippet UNSAVED and ask for confirm; show inline diff
+                  const id = `apply-${Date.now()}`;
+                  this.pendingApply.set(id, { uri: document.uri, original });
+                  const updated = await this.applySnippetUnsaved(editor, cleaned);
+                  this.ensureEditorVisible(document);
+                  const ed = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === document.uri.toString()) || editor;
+                  this.showInlineDiffDecorations(ed, original, updated);
+                  this.panel?.webview.postMessage({ type: 'applyConfirm', id, file: filePath });
+                  this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ Model returned empty content for merge. Applied snippet inline (unsaved); Accept to keep or Decline to undo.` });
+                  this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+                } else if (preview) {
                   const uriStr = document.uri.toString();
                   const payload = { changes: [ { uri: uriStr, newText: cleaned } ] };
                   this.panel?.webview.postMessage({ type: 'agentActivity', id: `fallback-${Date.now()}`, text: `Model returned empty content; opening preview to apply snippet…` });
@@ -603,6 +835,38 @@ REQUIREMENTS:
             } else {
               this.panel?.webview.postMessage({ type: 'chatError', model: modelLabel, message: String(e?.message || e) });
             }
+          }
+          break;
+        }
+        case 'applyConfirmResponse': {
+          const id = String(msg.id || '');
+          const action = String(msg.action || '').toLowerCase();
+          const entry = id ? this.pendingApply.get(id) : undefined;
+          if (!entry) { break; }
+          try {
+            const doc = await vscode.workspace.openTextDocument(entry.uri);
+            const editor = (vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === doc.uri.toString())
+              || await vscode.window.showTextDocument(doc, { preview: false }));
+            if (action === 'accept') {
+              try { await doc.save(); } catch {}
+              this.clearInlineDiffDecorations();
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `saved-${Date.now()}`, text: 'Saved changes' });
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: this.currentModel || 'model', text: `✅ Changes accepted.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: this.currentModel || 'model' });
+            } else {
+              // Revert by restoring original file content
+              await editor.edit((eb) => {
+                const full = new vscode.Range(new vscode.Position(0, 0), doc.lineAt(Math.max(0, doc.lineCount - 1)).range.end);
+                eb.replace(full, entry.original);
+              });
+              try { await doc.save(); } catch {}
+              this.clearInlineDiffDecorations();
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `reverted-${Date.now()}`, text: 'Reverted changes' });
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: this.currentModel || 'model', text: `❎ Changes declined and reverted.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: this.currentModel || 'model' });
+            }
+          } finally {
+            this.pendingApply.delete(id);
           }
           break;
         }
@@ -927,12 +1191,12 @@ MODIFIED FILE:`;
     this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully modified ${targetFile}.` });
         this.panel?.webview.postMessage({ type: 'chatDone', model });
         
-        // Open the file to show the changes
+        // Reveal the file without reopening duplicate tabs
         const ws = vscode.workspace.workspaceFolders?.[0];
         if (ws) {
           const uri = vscode.Uri.joinPath(ws.uri, targetFile);
           const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc, { preview: false });
+          this.ensureEditorVisible(doc);
         }
         
         return;
@@ -1298,8 +1562,8 @@ ASSISTANT: ${this.assistantBuffer}`;
     console.log('directApplyCode: selection empty?', selection.isEmpty, 'newCode length:', newCode.length);
 
     try {
-      // Ensure editor is visible
-      await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+      // Ensure editor is visible without reopening duplicate tabs
+      this.ensureEditorVisible(document);
 
       // Heuristic: choose strategy (replace selection | replace whole file | insert)
       const fileText = document.getText();
@@ -1315,16 +1579,17 @@ ASSISTANT: ${this.assistantBuffer}`;
         return longEnough || hasMainMarkers || hasExpressBoot || duplicateHeader;
       };
 
-      const shouldReplaceWholeFile = selection.isEmpty && looksLikeFullFile();
+  // If snippet looks like a full file, prefer replacing the whole document even if there's a selection
+  const shouldReplaceWholeFile = looksLikeFullFile();
 
       const ok = await editor.edit((editBuilder) => {
-        if (!selection.isEmpty) {
-          // Replace selected code
-          editBuilder.replace(selection, trimmedSnippet);
-        } else if (shouldReplaceWholeFile) {
+        if (shouldReplaceWholeFile) {
           // Replace the whole document
           const full = new vscode.Range(document.positionAt(0), document.positionAt(fileText.length));
           editBuilder.replace(full, trimmedSnippet + (trimmedSnippet.endsWith("\n") ? '' : '\n'));
+        } else if (!selection.isEmpty) {
+          // Replace selected code
+          editBuilder.replace(selection, trimmedSnippet);
         } else {
           // Insert at cursor, with surrounding newlines for cleanliness
           const insertAt = selection.active;
@@ -1338,9 +1603,9 @@ ASSISTANT: ${this.assistantBuffer}`;
         return false;
       }
 
-      // Optionally reveal where we edited
-      const pos = editor.selection.isEmpty ? editor.selection.active : editor.selection.start;
-      try { editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport); } catch {}
+  // Optionally reveal where we edited
+  const pos = editor.selection.isEmpty ? editor.selection.active : editor.selection.start;
+  try { editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport); } catch {}
 
       // Save file to persist changes
       try { await document.save(); } catch {}
@@ -1351,6 +1616,59 @@ ASSISTANT: ${this.assistantBuffer}`;
       vscode.window.showErrorMessage(`Failed to apply code: ${error.message}`);
       return false;
     }
+  }
+
+  // Apply a snippet without saving, suitable for inline confirm UI
+  private async applySnippetUnsaved(editor: vscode.TextEditor, snippet: string): Promise<string> {
+    const document = editor.document;
+    const selection = editor.selection;
+    const fileText = document.getText();
+    const trimmed = snippet.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
+
+    const looksLikeFullFile = (): boolean => {
+      const s = trimmed;
+      const longEnough = s.length > Math.max(400, Math.floor(fileText.length * 0.5));
+      const hasMainMarkers = /(module\.exports|export\s+(default|const|function|class)|import\s|^\s*"use strict";|^\s*'use strict';)/m.test(s);
+      const hasReactComponent = /(import\s+React|from\s+"react"|from\s+'react')/m.test(s);
+      return longEnough || hasMainMarkers || hasReactComponent;
+    };
+
+    const replaceWhole = looksLikeFullFile();
+    await editor.edit((eb) => {
+      if (replaceWhole) {
+        const full = new vscode.Range(document.positionAt(0), document.positionAt(fileText.length));
+        eb.replace(full, trimmed + (trimmed.endsWith('\n') ? '' : '\n'));
+      } else if (!selection.isEmpty) {
+        eb.replace(selection, trimmed);
+      } else {
+        const insertAt = selection.active;
+        const needsLead = insertAt.character !== 0 ? '\n' : '';
+        eb.insert(insertAt, needsLead + trimmed + '\n');
+      }
+    });
+    return editor.document.getText();
+  }
+
+  // Heuristic to determine if a snippet represents a whole-file replacement
+  private snippetLooksLikeFullFile(snippet: string, fileText: string, language: string): boolean {
+    const s = String(snippet || '').trim();
+    if (!s) { return false; }
+    const longEnough = s.length > Math.max(400, Math.floor(fileText.length * 0.5));
+    // Common markers across languages indicating a top-level, complete file
+    const common = /(module\.exports|export\s+(default|const|function|class)|import\s|^\s*"use strict";|^\s*'use strict';|^#!\/.+)/m.test(s);
+    // JS/TS specific markers
+    const js = /(require\(['"]express['"]\)|from\s+['"]express['"]|const\s+app\s*=\s*express\(|app\.listen\()/m.test(s)
+      || /(const\s+express\s*=|^\s*import\s+express)/m.test(s);
+    // React/TSX markers
+    const react = /(import\s+React|from\s+['"]react['"]).*\n/m.test(s);
+    // Python markers
+    const py = /(if\s+__name__\s*==\s*['"]__main__['"])|(^\s*import\s+\w+)/m.test(s);
+    // Shell/Node shebang
+    const shebang = /^#!/.test(s);
+    // Language hints can slightly bias detection
+    const lang = String(language || '').toLowerCase();
+    const langBias = (lang.includes('python') && py) || ((lang.includes('javascript') || lang.includes('typescript')) && (js || react));
+    return longEnough || common || js || react || py || shebang || !!langBias;
   }
 
   // AI Code Action Handlers (Cursor/Copilot style features)

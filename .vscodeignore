@@ -1,6 +1,11 @@
 .vscode/**
 .vscode-test/**
 src/**
+webview/src/**
+scripts/**
+test/**
+**/*.spec.*
+**/*.test.*
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
@@ -9,3 +14,8 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+node_modules/**
+# keep built outputs
+!out/**
+!media/**
+coverage/**

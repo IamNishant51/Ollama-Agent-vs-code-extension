@@ -264,6 +264,10 @@ npm run compile
 npm run watch
 ```
 
+### Publishing
+
+See PUBLISHING.md for a step-by-step guide to package and publish this extension to the VS Code Marketplace.
+
 ### Testing
 ```bash
 # Run linter

@@ -1,5 +1,5 @@
 {
-  "name": "Ollama-Ai-agent",
+  "name": "ollama-ai-agent",
   "publisher": "NishantUnavane",
   "displayName": "Ollama Agent - Local AI Coding Assistant",
   "description": "Transform your locally-running Ollama models into an intelligent coding agent. Chat, generate code, edit files, and automate tasks—all running 100% locally with full privacy.",
@@ -38,9 +38,6 @@
     "Snippets",
     "Formatters"
   ],
-  "activationEvents": [
-    "onStartupFinished"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
@@ -48,8 +45,13 @@
       "properties": {
         "ollamaAgent.applyPreviewAlways": {
           "type": "boolean",
+          "default": false,
+          "description": "Open a preview diff when applying code from the chat before writing changes. If false and inline confirm is enabled, changes are applied in the file with Accept/Decline."
+        },
+        "ollamaAgent.applyConfirmInline": {
+          "type": "boolean",
           "default": true,
-          "description": "Always open a preview diff when applying code from the chat before writing changes."
+          "description": "Apply changes directly to the file and show Accept/Decline UI to keep or revert."
         },
         "ollamaAgent.largeFileThresholdBytes": {
           "type": "number",
@@ -443,11 +445,19 @@
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.23.1",
     "eslint": "^9.32.0",
-    "typescript": "^5.9.2"
-  },
-  "dependencies": {
+    "typescript": "^5.9.2",
     "prismjs": "^1.30.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
+  },
+  "dependencies": {},
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "galleryBanner": {
+    "color": "#1f1f1f",
+    "theme": "dark"
   }
 }

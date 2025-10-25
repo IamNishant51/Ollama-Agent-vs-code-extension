@@ -88,6 +88,8 @@ export default function App() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentId, setCurrentId] = useState<string>('');
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
+  const historyOpenRef = useRef(historyOpen);
+  useEffect(() => { historyOpenRef.current = historyOpen; }, [historyOpen]);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<'read' | 'agent' | 'combine'>('read');
   const modeRef = useRef<'read' | 'agent' | 'combine'>(mode);
@@ -161,6 +163,8 @@ export default function App() {
     // Request models immediately for faster detection
     vscode.postMessage({ type: 'requestModels' });
     vscode.postMessage({ type: 'requestConfig' });
+    // Request persisted threads/settings from extension (globalState), so history survives restarts
+    try { vscode.postMessage({ type: 'requestThreads' }); } catch {}
     
     try {
       const state = vscode.getState?.() || {};
@@ -191,6 +195,28 @@ export default function App() {
       if (DEBUG) console.log('📩 Webview received message:', msg.type, msg);
       
       switch (msg.type) {
+        case 'threadsState': {
+          const incoming = msg as any;
+          const thrs: Thread[] = Array.isArray(incoming.threads) ? incoming.threads : [];
+          const curId: string = incoming.currentId || thrs[0]?.id || '';
+          const histOpen: boolean = typeof incoming.historyOpen === 'boolean' ? incoming.historyOpen : historyOpenRef.current;
+          const autoHide: boolean = typeof incoming.autoHideHistory === 'boolean' ? incoming.autoHideHistory : autoHideHistory;
+          const compact: boolean = typeof incoming.compactTables === 'boolean' ? incoming.compactTables : compactTables;
+          const striped: boolean = typeof incoming.stripedTables === 'boolean' ? incoming.stripedTables : stripedTables;
+          setThreads(thrs);
+          setCurrentId(curId);
+          setHistoryOpen(histOpen);
+          setAutoHideHistory(autoHide);
+          setCompactTables(compact);
+          setStripedTables(striped);
+          try {
+            if (curId && contentRef.current) {
+              const t = thrs.find((x) => x.id === curId);
+              if (t) contentRef.current.innerHTML = t.html || '';
+            }
+          } catch {}
+          break;
+        }
         case 'models':
           setModels(msg.models || []);
           if ((msg.models || []).length && !selected) {
@@ -251,12 +277,76 @@ export default function App() {
           // Improved heuristic: show overlay on start verbs, hide on completion verbs
           const tl = text.toLowerCase();
           const startLike = /(apply|applying|merge|merging|write|writing|save|saving|update|updating)/.test(tl);
-          const doneLike = /(applied|merged|wrote|written|saved|completed|complete|done|success|succeeded)/.test(tl);
+          const doneLike = /(applied|merged|wrote|written|saved|completed|complete|done|success|succeeded|reverted|canceled|cancelled)/.test(tl);
           if (startLike && !doneLike) {
             // Keep overlay visible until an explicit done-like event arrives
             showApplyOverlay(0);
           } else if (doneLike) {
-            setTimeout(() => hideApplyOverlay(), 400);
+            setTimeout(() => {
+              hideApplyOverlay();
+              // Clean up any lingering Accept/Decline controls
+              try {
+                const root = contentRef.current!;
+                root.querySelectorAll('.apply-confirm-actions').forEach((n) => n.remove());
+              } catch {}
+            }, 400);
+          }
+          break;
+        }
+        case 'applyConfirm': {
+          const id = String((msg as any).id || '');
+          const file = String((msg as any).file || 'file');
+          // Create a compact assistant bubble with Accept/Decline
+          appendAssistant(undefined, false);
+          appendAssistantChunk(`Review changes to ${file}.`);
+          finalizeLastAssistant();
+          // Render buttons under the last assistant message
+          if (lastDoneRef.current) {
+            // Remove any existing confirm controls before adding new ones
+            try {
+              const root = contentRef.current!;
+              root.querySelectorAll('.apply-confirm-actions').forEach((n) => n.remove());
+            } catch {}
+            const actions = document.createElement('div');
+            actions.className = 'apply-confirm-actions';
+            actions.style.display = 'flex';
+            actions.style.gap = '8px';
+            actions.style.marginTop = '8px';
+            const accept = document.createElement('button');
+            accept.className = 'send';
+            accept.textContent = 'Accept';
+            accept.addEventListener('click', () => {
+              try { vscode.postMessage({ type: 'applyConfirmResponse', id, action: 'accept' }); } catch {}
+              // Hide controls immediately after click
+              try {
+                const parent = actions.parentElement;
+                actions.remove();
+                // Keep focus on content bottom
+                const root = contentRef.current!;
+                root.scrollTop = root.scrollHeight;
+              } catch {}
+            });
+            const decline = document.createElement('button');
+            decline.className = 'btn';
+            decline.textContent = 'Decline';
+            decline.addEventListener('click', () => {
+              try { vscode.postMessage({ type: 'applyConfirmResponse', id, action: 'decline' }); } catch {}
+              // Hide controls immediately after click
+              try {
+                const parent = actions.parentElement;
+                actions.remove();
+                const root = contentRef.current!;
+                root.scrollTop = root.scrollHeight;
+              } catch {}
+            });
+            actions.appendChild(accept);
+            actions.appendChild(decline);
+            lastDoneRef.current.parentElement?.appendChild(actions);
+            // Ensure the newest controls are visible
+            try {
+              const root = contentRef.current!;
+              root.scrollTop = root.scrollHeight;
+            } catch {}
           }
           break;
         }
@@ -926,6 +1016,11 @@ export default function App() {
 
   function finalizeLastAssistant() {
     if (!lastAssistant) return;
+    // If this bubble was a loading one and never received chunks, clear the loader
+    if (lastAssistant.classList.contains('loading')) {
+      lastAssistant.classList.remove('loading');
+      lastAssistant.innerHTML = '';
+    }
     const txt = lastAssistant.textContent || '';
     lastAssistant.innerHTML = renderMarkdownLike(txt);
     lastDoneRef.current = lastAssistant;
@@ -1169,13 +1264,12 @@ export default function App() {
 
   function persistState(thrs: Thread[], id: string, history: boolean) {
     try { vscode.setState?.({ threads: thrs, currentId: id, historyOpen: history, autoHideHistory, compactTables, stripedTables }); } catch {}
-    try { vscode.postMessage({ type: 'threadsUpdate', threads: thrs, currentId: id }); } catch {}
+    try { vscode.postMessage({ type: 'threadsUpdate', threads: thrs, currentId: id, historyOpen: history, autoHideHistory, compactTables, stripedTables }); } catch {}
   }
 
   useEffect(() => {
-    
+    // Whenever display settings change, persist to both webview state and extension globalState
     persistState(threads, currentId, historyOpen);
-    
   }, [historyOpen, autoHideHistory, compactTables, stripedTables]);
 
   // After initial state is established, publish once so left panel can render
@@ -1385,9 +1479,9 @@ export default function App() {
           {/* Settings Section */}
           <div className="settings-section">
             <button className="settings-toggle" onClick={() => setShowSettings(!showSettings)}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M12 1v6m0 6v6m5.66-9l-3 5.2m-3.46 0l-3-5.2m-1.29 8.66l5.2-3m0-3.46l-5.2-3m14.49 1.29l-5.2 3m0 3.46l5.2 3"/>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
               Settings
             </button>
