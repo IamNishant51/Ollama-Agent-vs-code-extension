@@ -277,17 +277,19 @@ ${snapshot}`;
                 case 'updateConfig': {
                     try {
                         const cfg = vscode.workspace.getConfiguration('ollamaAgent');
-                        if (msg.mode !== undefined) {
-                            await cfg.update('mode', msg.mode, vscode.ConfigurationTarget.Global);
+                        // Support both top-level fields and nested { config: { ... } }
+                        const payload = typeof msg.config === 'object' && msg.config ? msg.config : msg;
+                        if (payload.mode !== undefined) {
+                            await cfg.update('mode', payload.mode, vscode.ConfigurationTarget.Global);
                         }
-                        if (msg.host !== undefined) {
-                            await cfg.update('host', msg.host, vscode.ConfigurationTarget.Global);
+                        if (payload.host !== undefined) {
+                            await cfg.update('host', payload.host, vscode.ConfigurationTarget.Global);
                         }
-                        if (msg.port !== undefined) {
-                            await cfg.update('port', msg.port, vscode.ConfigurationTarget.Global);
+                        if (payload.port !== undefined) {
+                            await cfg.update('port', payload.port, vscode.ConfigurationTarget.Global);
                         }
-                        if (msg.apiKey !== undefined) {
-                            await cfg.update('apiKey', msg.apiKey, vscode.ConfigurationTarget.Global);
+                        if (payload.apiKey !== undefined) {
+                            await cfg.update('apiKey', payload.apiKey, vscode.ConfigurationTarget.Global);
                         }
                         // Note: Connection settings will take effect after reloading the window
                         this.panel?.webview.postMessage({ type: 'configSaved' });
@@ -378,10 +380,11 @@ ${snapshot}`;
                     const mode = cfg.get('mode', 'read');
                     if (mode === 'agent') {
                         // Quick intent: handle simple direct file operations deterministically
-                        const direct = await this.inferDirectEditsFromPrompt(prompt);
+                        // IMPORTANT: Only consider the user's instruction text, not embedded file contents
+                        const direct = await this.inferDirectEditsFromPrompt(msg.prompt || '');
                         if (direct) {
                             this.panel?.webview.postMessage({ type: 'chatStart', model: m });
-                            this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: `Applying requested changes to ${direct.summary}...` });
+                            this.panel?.webview.postMessage({ type: 'agentActivity', id: `apply-${Date.now()}`, text: `Applying requested changes to ${direct.summary}…` });
                             await vscode.commands.executeCommand('ollamaAgent.applyWorkspaceEdit', { changes: direct.changes });
                             // Open the first edited file to show the result
                             const first = direct.changes[0];
@@ -397,6 +400,8 @@ ${snapshot}`;
                                 }
                                 catch { }
                             }
+                            // Provide a concise assistant summary to populate the bubble
+                            this.panel?.webview.postMessage({ type: 'chatChunk', model: m, text: `✅ Applied changes to ${direct.summary}.` });
                             this.panel?.webview.postMessage({ type: 'chatDone', model: m });
                             return;
                         }
@@ -472,11 +477,11 @@ ${snapshot}`;
                 }
                 case 'insertText': {
                     const text = msg.text || '';
-                    const mode = msg.mode || 'read';
-                    console.log('insertText received - mode:', mode, 'text length:', text.length);
-                    // Use last active editor (before focus moved to chat panel)
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const effectiveMode = cfg.get('mode', 'read');
+                    console.log('insertText received - uiMode:', msg.mode, 'effectiveMode:', effectiveMode, 'text length:', text.length);
                     const editor = this.lastActiveEditor || vscode.window.activeTextEditor;
-                    if (mode !== 'agent') {
+                    if (effectiveMode !== 'agent') {
                         vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to allow changes.');
                         break;
                     }
@@ -485,18 +490,17 @@ ${snapshot}`;
                         break;
                     }
                     if (text) {
-                        // Direct insert without AI
                         await this.directInsertCode(editor, text);
                     }
                     break;
                 }
                 case 'applyCode': {
-                    const text = msg.text || '';
-                    const mode = msg.mode || 'read';
-                    console.log('applyCode received - mode:', mode, 'text length:', text.length);
-                    // Use last active editor (before focus moved to chat panel)
+                    const snippet = msg.text || '';
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const effectiveMode = cfg.get('mode', 'read');
+                    console.log('applyCode received - uiMode:', msg.mode, 'effectiveMode:', effectiveMode, 'text length:', snippet.length);
                     const editor = this.lastActiveEditor || vscode.window.activeTextEditor;
-                    if (mode !== 'agent') {
+                    if (effectiveMode !== 'agent') {
                         vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply changes.');
                         break;
                     }
@@ -504,15 +508,114 @@ ${snapshot}`;
                         vscode.window.showWarningMessage('No active editor. Please open a file first.');
                         break;
                     }
-                    if (text) {
-                        // Direct apply without AI
-                        await this.directApplyCode(editor, text);
+                    if (!snippet) {
+                        break;
+                    }
+                    // Smart merge using AI: read current file, ask model to integrate snippet, write back
+                    const document = editor.document;
+                    const filePath = vscode.workspace.asRelativePath(document.uri);
+                    const language = document.languageId;
+                    const original = document.getText();
+                    // Start UI feedback
+                    let resolvedModel = '';
+                    try {
+                        const incoming = String(msg.model || '').trim();
+                        const isAuto = /^auto(?::.*)?$/i.test(incoming);
+                        resolvedModel = isAuto ? '' : incoming;
+                        if (!resolvedModel) {
+                            resolvedModel = this.currentModel || (await this.client.listModels())[0] || '';
+                        }
+                    }
+                    catch { }
+                    const modelLabel = resolvedModel || 'model';
+                    this.panel?.webview.postMessage({ type: 'chatStart', model: modelLabel });
+                    this.panel?.webview.postMessage({ type: 'agentActivity', id: `read-${Date.now()}`, text: `Reading ${filePath}…` });
+                    try {
+                        const model = resolvedModel || (await this.client.listModels())[0];
+                        if (!model) {
+                            throw new Error('No model available');
+                        }
+                        this.panel?.webview.postMessage({ type: 'agentActivity', id: `gen-${Date.now()}`, text: `Merging snippet into ${filePath}…` });
+                        const prompt = `You are a careful code editor. Merge the provided snippet into the current file.
+
+CURRENT FILE (${filePath}, language=${language}):
+-----BEGIN FILE-----
+${original}
+-----END FILE-----
+
+SNIPPET TO INTEGRATE:
+-----BEGIN SNIPPET-----
+${snippet}
+-----END SNIPPET-----
+
+REQUIREMENTS:
+- Integrate the snippet into the correct place(s).
+- Add or adjust imports/uses/registrations if needed; avoid duplicates.
+- Preserve file style and structure; do not duplicate existing code.
+- If the snippet conflicts with existing code, refactor minimally to integrate.
+- Output ONLY the COMPLETE UPDATED FILE CONTENT.
+- NO markdown code fences. NO explanations.`;
+                        let merged = '';
+                        const messages = [{ role: 'user', content: prompt }];
+                        await this.client.chat(model, messages, false, (tok) => { merged += tok; }, this.controller?.signal);
+                        // Clean common wrappers
+                        merged = (merged || '').trim().replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
+                        if (!merged) {
+                            throw new Error('Model returned empty content');
+                        }
+                        this.panel?.webview.postMessage({ type: 'agentActivity', id: `write-${Date.now()}`, text: `Writing changes to ${filePath}…` });
+                        await editor.edit((eb) => {
+                            const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
+                            eb.replace(full, merged);
+                        });
+                        // Summarize in assistant bubble
+                        this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `✅ Applied snippet to ${filePath}.` });
+                        this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+                    }
+                    catch (e) {
+                        const msgText = String(e?.message || e || '').toLowerCase();
+                        const isEmpty = msgText.includes('empty content') || msgText.includes('no model available');
+                        if (isEmpty) {
+                            // Fallback: either open a diff preview or apply directly, based on config
+                            try {
+                                const cfg2 = vscode.workspace.getConfiguration('ollamaAgent');
+                                const preview = cfg2.get('previewOnFallback', true);
+                                const cleaned = String(snippet || '').replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
+                                if (preview) {
+                                    const uriStr = document.uri.toString();
+                                    const payload = { changes: [{ uri: uriStr, newText: cleaned }] };
+                                    this.panel?.webview.postMessage({ type: 'agentActivity', id: `fallback-${Date.now()}`, text: `Model returned empty content; opening preview to apply snippet…` });
+                                    await vscode.commands.executeCommand('ollamaAgent.previewEdits', payload);
+                                    this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ Model returned empty content. Opened a preview to apply the snippet to ${filePath}.` });
+                                    this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+                                }
+                                else {
+                                    this.panel?.webview.postMessage({ type: 'agentActivity', id: `fallback-${Date.now()}`, text: `Model returned empty content; applying snippet directly…` });
+                                    const applied = await this.directApplyCode(editor, cleaned);
+                                    if (applied) {
+                                        this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ Model returned empty content. Applied the snippet directly to ${filePath}.` });
+                                        this.panel?.webview.postMessage({ type: 'agentActivity', id: `saved-${Date.now()}`, text: `Saved changes` });
+                                        this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+                                    }
+                                    else {
+                                        this.panel?.webview.postMessage({ type: 'chatError', model: modelLabel, message: `Fallback apply reported no changes.` });
+                                    }
+                                }
+                            }
+                            catch (inner) {
+                                this.panel?.webview.postMessage({ type: 'chatError', model: modelLabel, message: `Fallback apply failed: ${String(inner?.message || inner)}` });
+                            }
+                        }
+                        else {
+                            this.panel?.webview.postMessage({ type: 'chatError', model: modelLabel, message: String(e?.message || e) });
+                        }
                     }
                     break;
                 }
                 case 'applyEdits': {
-                    const mode = msg.mode || 'read'; // Get mode from message
-                    if (mode !== 'agent') {
+                    const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+                    const effectiveMode = cfg.get('mode', 'read');
+                    if (effectiveMode !== 'agent') {
                         vscode.window.showInformationMessage('Read mode: editing is disabled. Switch to Agent mode to apply edits.');
                         break;
                     }
@@ -750,19 +853,19 @@ OUTPUT RULES:
             const targetFile = mentionedFiles[0];
             // Step 1: Read the file first
             this.panel?.webview.postMessage({ type: 'chatStart', model });
-            this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Reading ${targetFile}...\n\n` });
+            this.panel?.webview.postMessage({ type: 'agentActivity', id: `read-${Date.now()}`, text: `Reading ${targetFile}…` });
             let fileContent = '';
             try {
                 const readResult = await this.executeTool({ cmd: 'readFile', path: targetFile });
                 fileContent = readResult;
-                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `File read successfully\n\n` });
+                this.panel?.webview.postMessage({ type: 'agentActivity', id: `readok-${Date.now()}`, text: `File read successfully` });
             }
             catch (e) {
                 this.panel?.webview.postMessage({ type: 'chatError', model, message: `Failed to read ${targetFile}: ${e}` });
                 return;
             }
             // Step 2: Ask AI to generate the modified version
-            this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Generating modifications...\n\n` });
+            this.panel?.webview.postMessage({ type: 'agentActivity', id: `gen-${Date.now()}`, text: `Generating modifications…` });
             // Build a smart modification prompt
             const modificationPrompt = `You are a code editor. Modify the following file based on the user's request.
 
@@ -807,13 +910,13 @@ MODIFIED FILE:`;
                 }
                 modifiedContent = modifiedContent.trim();
                 // Step 3: Write the modified file
-                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Writing changes to ${targetFile}...\n\n` });
+                this.panel?.webview.postMessage({ type: 'agentActivity', id: `write-${Date.now()}`, text: `Writing changes to ${targetFile}…` });
                 await this.executeTool({
                     cmd: 'writeFile',
                     path: targetFile,
                     content: modifiedContent
                 });
-                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
+                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully modified ${targetFile}.` });
                 this.panel?.webview.postMessage({ type: 'chatDone', model });
                 // Open the file to show the changes
                 const ws = vscode.workspace.workspaceFolders?.[0];
@@ -835,10 +938,10 @@ MODIFIED FILE:`;
             const confirm = await vscode.window.showWarningMessage(`Delete ${targetFile}?`, { modal: true }, 'Delete');
             if (confirm === 'Delete') {
                 this.panel?.webview.postMessage({ type: 'chatStart', model });
-                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Deleting ${targetFile}...\n\n` });
+                this.panel?.webview.postMessage({ type: 'agentActivity', id: `del-${Date.now()}`, text: `Deleting ${targetFile}…` });
                 try {
                     await this.executeTool({ cmd: 'deleteFile', path: targetFile });
-                    this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully deleted ${targetFile}!\n\n` });
+                    this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `🗑️ Successfully deleted ${targetFile}.` });
                     this.panel?.webview.postMessage({ type: 'chatDone', model });
                 }
                 catch (e) {
@@ -855,7 +958,7 @@ MODIFIED FILE:`;
             const hasSelection = !selection.isEmpty;
             const selectedText = hasSelection ? editor.document.getText(selection) : '';
             this.panel?.webview.postMessage({ type: 'chatStart', model });
-            this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Modifying ${targetFile}...\n\n` });
+            this.panel?.webview.postMessage({ type: 'agentActivity', id: `mod-${Date.now()}`, text: `Modifying ${targetFile}…` });
             const modificationPrompt = hasSelection
                 ? `You are a code editor. Modify ONLY the selected code based on the user's request.
 
@@ -906,7 +1009,7 @@ MODIFIED FILE:`;
                         editBuilder.replace(fullRange, modifiedContent);
                     }
                 });
-                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `Successfully modified ${targetFile}!\n\n` });
+                this.panel?.webview.postMessage({ type: 'chatChunk', model, text: `✅ Successfully modified ${targetFile}.` });
                 this.panel?.webview.postMessage({ type: 'chatDone', model });
                 return;
             }
@@ -915,11 +1018,11 @@ MODIFIED FILE:`;
                 return;
             }
         }
-        // FALLBACK: For questions without file modifications, just do regular chat
+        // FALLBACK: For questions without file modifications, just do regular chat (streamed)
         this.panel?.webview.postMessage({ type: 'chatStart', model });
         const messages = [{ role: 'user', content: prompt }];
         try {
-            await this.client.chat(model, messages, false, (token) => {
+            await this.client.chat(model, messages, true, (token) => {
                 this.panel?.webview.postMessage({ type: 'chatChunk', model, text: token });
             }, this.controller?.signal);
             this.panel?.webview.postMessage({ type: 'chatDone', model });
@@ -1214,23 +1317,61 @@ ASSISTANT: ${this.assistantBuffer}`;
     async directApplyCode(editor, newCode) {
         const document = editor.document;
         const selection = editor.selection;
-        vscode.window.showInformationMessage(`🤖 Applying code...`);
+        console.log('directApplyCode: selection empty?', selection.isEmpty, 'newCode length:', newCode.length);
         try {
-            await editor.edit((editBuilder) => {
+            // Ensure editor is visible
+            await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+            // Heuristic: choose strategy (replace selection | replace whole file | insert)
+            const fileText = document.getText();
+            const trimmedSnippet = newCode.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
+            const language = document.languageId || '';
+            const looksLikeFullFile = () => {
+                const s = trimmedSnippet;
+                const longEnough = s.length > Math.max(400, Math.floor(fileText.length * 0.5));
+                const hasMainMarkers = /(module\.exports|export\s+(default|const|function|class)|import\s|^\s*"use strict";|^\s*'use strict';)/m.test(s);
+                const hasExpressBoot = /(require\(['"]express['"]\)|from\s+"express"|const\s+app\s*=\s*express\(|app\.listen\()/m.test(s);
+                const duplicateHeader = /(const\s+express\s*=|^\s*import\s+express)/m.test(s) && /(const\s+app\s*=\s*express\(|app\.listen\()/m.test(s);
+                return longEnough || hasMainMarkers || hasExpressBoot || duplicateHeader;
+            };
+            const shouldReplaceWholeFile = selection.isEmpty && looksLikeFullFile();
+            const ok = await editor.edit((editBuilder) => {
                 if (!selection.isEmpty) {
                     // Replace selected code
-                    editBuilder.replace(selection, newCode);
+                    editBuilder.replace(selection, trimmedSnippet);
+                }
+                else if (shouldReplaceWholeFile) {
+                    // Replace the whole document
+                    const full = new vscode.Range(document.positionAt(0), document.positionAt(fileText.length));
+                    editBuilder.replace(full, trimmedSnippet + (trimmedSnippet.endsWith("\n") ? '' : '\n'));
                 }
                 else {
-                    // If no selection, replace entire file content (like Cursor does)
-                    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
-                    editBuilder.replace(fullRange, newCode);
+                    // Insert at cursor, with surrounding newlines for cleanliness
+                    const insertAt = selection.active;
+                    const needsLead = insertAt.character !== 0 ? '\n' : '';
+                    editBuilder.insert(insertAt, needsLead + trimmedSnippet + '\n');
                 }
             });
+            if (!ok) {
+                vscode.window.showErrorMessage(`Failed to apply code: no changes were made by editor.edit()`);
+                return false;
+            }
+            // Optionally reveal where we edited
+            const pos = editor.selection.isEmpty ? editor.selection.active : editor.selection.start;
+            try {
+                editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+            }
+            catch { }
+            // Save file to persist changes
+            try {
+                await document.save();
+            }
+            catch { }
             vscode.window.showInformationMessage(`✅ Code applied successfully!`);
+            return true;
         }
         catch (error) {
             vscode.window.showErrorMessage(`Failed to apply code: ${error.message}`);
+            return false;
         }
     }
     // AI Code Action Handlers (Cursor/Copilot style features)

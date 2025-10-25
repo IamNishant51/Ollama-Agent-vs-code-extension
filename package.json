@@ -97,6 +97,11 @@
           "type": "boolean",
           "default": false,
           "description": "Experimental: suggest AI-generated docstrings when starting a block comment (/**)."
+        },
+        "ollamaAgent.previewOnFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "When model returns empty content during Apply, open a diff preview before writing the fallback snippet."
         }
       }
     },

@@ -51,6 +51,9 @@ type VSCodeAPI = { postMessage: (msg: any) => void; setState: (s: any) => void; 
 // @ts-ignore
 const vscode: VSCodeAPI = acquireVsCodeApi();
 
+// Reduce noisy console logging in production
+const DEBUG = false;
+
 type ChatEvent =
   | { type: 'models'; models: string[] }
   | { type: 'prefill'; text: string }
@@ -71,6 +74,7 @@ type Thread = {
 };
 
 export default function App() {
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [models, setModels] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [selected2, setSelected2] = useState<string>(''); // Second model for combine mode
@@ -86,6 +90,8 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const lastDoneRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<'read' | 'agent' | 'combine'>('read');
+  const modeRef = useRef<'read' | 'agent' | 'combine'>(mode);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
   const [showReadme, setShowReadme] = useState(false);
   const [readmeStyle, setReadmeStyle] = useState('General');
   const [readmePlacement, setReadmePlacement] = useState('GitHub');
@@ -98,6 +104,53 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [autoHideHistory, setAutoHideHistory] = useState(true);
+  const [compactTables, setCompactTables] = useState(false);
+  const [stripedTables, setStripedTables] = useState(true);
+  const [activities, setActivities] = useState<Array<{ id: string; text: string; status: 'running' | 'done' | 'error' }>>([]);
+  // Distinct Apply animation overlay
+  const [applying, setApplying] = useState(false);
+  const applyTimerRef = useRef<number | null>(null);
+
+  function showApplyOverlay(duration = 8000) {
+    try { setApplying(true); } catch {}
+    if (applyTimerRef.current) {
+      try { window.clearTimeout(applyTimerRef.current); } catch {}
+    }
+    // Use window.setTimeout for DOM timer id type
+    applyTimerRef.current = window.setTimeout(() => {
+      try { setApplying(false); } catch {}
+      applyTimerRef.current = null;
+    }, duration) as unknown as number;
+  }
+  function hideApplyOverlay() {
+    if (applyTimerRef.current) {
+      try { window.clearTimeout(applyTimerRef.current); } catch {}
+      applyTimerRef.current = null;
+    }
+    try { setApplying(false); } catch {}
+  }
+
+  // Activity lifecycle helpers
+  function startActivity(id: string, text: string, opts?: { autoDoneAfter?: number; autoRemoveAfter?: number }) {
+    setActivities((prev) => [{ id, text, status: 'running' }, ...prev.filter((a) => a.id !== id)]);
+    if (opts?.autoDoneAfter && opts.autoDoneAfter > 0) {
+      setTimeout(() => {
+        setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'done' } : a)));
+        if (opts?.autoRemoveAfter && opts.autoRemoveAfter > 0) {
+          setTimeout(() => setActivities((prev) => prev.filter((a) => a.id !== id)), opts.autoRemoveAfter);
+        }
+      }, opts.autoDoneAfter);
+    }
+  }
+  function completeActivity(id: string, removeDelay = 1500) {
+    setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'done' } : a)));
+    if (removeDelay > 0) setTimeout(() => setActivities((prev) => prev.filter((a) => a.id !== id)), removeDelay);
+  }
+  function errorActivity(id: string, removeDelay = 2500) {
+    setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'error' } : a)));
+    if (removeDelay > 0) setTimeout(() => setActivities((prev) => prev.filter((a) => a.id !== id)), removeDelay);
+  }
 
   useEffect(() => {
     injectStyles();
@@ -114,6 +167,11 @@ export default function App() {
         if (typeof state.historyOpen === 'boolean') {
           setHistoryOpen(state.historyOpen);
         }
+        if (typeof state.autoHideHistory === 'boolean') {
+          setAutoHideHistory(state.autoHideHistory);
+        }
+        if (typeof state.compactTables === 'boolean') setCompactTables(state.compactTables);
+        if (typeof state.stripedTables === 'boolean') setStripedTables(state.stripedTables);
         
         // Load thread content immediately without delay
         const t = (state.threads || []).find((x: Thread) => x.id === (state.currentId || ''));
@@ -127,7 +185,7 @@ export default function App() {
     } catch {}
     const onMessage = (ev: MessageEvent<ChatEvent | any>) => {
       const msg = ev.data;
-      console.log('📩 Webview received message:', msg.type, msg);
+      if (DEBUG) console.log('📩 Webview received message:', msg.type, msg);
       
       switch (msg.type) {
         case 'models':
@@ -160,6 +218,8 @@ export default function App() {
             setStatus('Streaming');
             return np;
           });
+          // Add a visible activity pill when streaming starts
+          try { startActivity('gen', `Generating response… (${msg.model})`); } catch {}
           appendAssistant(msg.model, true);
           break;
         case 'chatResume':
@@ -177,20 +237,45 @@ export default function App() {
           });
           setPaused(false);
           finalizeLastAssistant();
+          // Mark activity done and fade out later
+          try { completeActivity('gen', 1500); } catch {}
+          // If an apply overlay is somehow still visible, hide it now
+          hideApplyOverlay();
           saveSnapshot();
           break;
+        case 'agentActivity': {
+          const id = String(msg.id || `act-${Date.now()}`);
+          const text = String(msg.text || 'Working…');
+          try { startActivity(id, text, { autoDoneAfter: 1400, autoRemoveAfter: 800 }); } catch {}
+          // Improved heuristic: show overlay on start verbs, hide on completion verbs
+          const tl = text.toLowerCase();
+          const startLike = /(apply|applying|merge|merging|write|writing|save|saving|update|updating)/.test(tl);
+          const doneLike = /(applied|merged|wrote|written|saved|completed|complete|done|success|succeeded)/.test(tl);
+          if (startLike && !doneLike) {
+            showApplyOverlay();
+          } else if (doneLike) {
+            setTimeout(() => hideApplyOverlay(), 400);
+          }
+          break;
+        }
         case 'error':
         case 'chatError': {
-          const message = 'message' in msg ? (msg as any).message || '' : '';
+          let message = 'message' in msg ? (msg as any).message || '' : '';
+          if (/empty\s*content/i.test(message)) {
+            message = 'Model returned empty content';
+          }
           const isAborted = /aborted/i.test(String(message));
           setSending(false);
           setPending(0);
           setStatus(isAborted ? 'Ready' : 'Error');
-          if (isAborted) {
-            appendAssistant('This operation was aborted.');
-          } else {
-            appendAssistant(`Error: ${message}`);
-          }
+          const errorText = isAborted ? 'This operation was aborted.' : `Error: ${message}`;
+          const errorModel = 'model' in msg ? (msg as any).model : undefined;
+          // Render error as message content, not as the meta model label text
+          appendAssistant(errorModel || undefined, false);
+          appendAssistantChunk(errorText);
+          finalizeLastAssistant();
+          try { errorActivity('gen'); } catch {}
+          hideApplyOverlay();
           saveSnapshot();
           break;
         }
@@ -237,6 +322,15 @@ export default function App() {
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, []);
+
+  // Auto-size composer textarea as user types
+  useEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const max = 200; // keep in sync with CSS max-height
+    el.style.height = Math.min(max, el.scrollHeight) + 'px';
+  }, [prompt]);
 
   // Get file icon (Unicode symbols that look professional)
   function getFileIcon(extension: string): string {
@@ -290,11 +384,6 @@ export default function App() {
     return iconMap[ext] || '📄';
   }
 
-  // AI Code Action Handlers (Cursor/Copilot style)
-  function handleExplainCode() {
-    vscode.postMessage({ type: 'explainSelection' });
-  }
-
   function handleFixCode() {
     vscode.postMessage({ type: 'fixCode' });
   }
@@ -320,6 +409,11 @@ export default function App() {
   }
 
   function send() {
+    if (pending > 0 || status === 'Streaming') {
+      // Prevent concurrent sends while an operation is in progress
+      try { startActivity('busy', 'Please stop current response before sending a new one.', { autoDoneAfter: 1200, autoRemoveAfter: 600 }); } catch {}
+      return;
+    }
     const model = selected || (models[0] || '');
     const model2 = mode === 'combine' ? (selected2 || (models[1] || '')) : '';
     if (!model || !prompt.trim()) return;
@@ -337,6 +431,15 @@ export default function App() {
     const allFiles = Array.from(new Set([...attachedFileNames, ...mentionFiles]));
     
     appendUser(prompt);
+    // Show files being used as an activity pill (like Copilot's "using context")
+    if (allFiles.length > 0) {
+      const maxShow = 3;
+      const shown = allFiles.slice(0, maxShow).join(', ');
+      const more = allFiles.length > maxShow ? ` +${allFiles.length - maxShow} more` : '';
+      const autoDone = allFiles.length > 5 ? 2400 : 1600;
+      const autoRemove = 900;
+      try { startActivity('files', `Reading context: ${shown}${more}`, { autoDoneAfter: autoDone, autoRemoveAfter: autoRemove }); } catch {}
+    }
     
     setSending(true);
     setStatus('Streaming');
@@ -412,6 +515,10 @@ export default function App() {
     const root = contentRef.current!;
     const wrap = document.createElement('div');
     wrap.className = 'msg';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> You';
+    wrap.appendChild(meta);
     const bubble = document.createElement('div');
     bubble.className = 'bubble user';
     bubble.textContent = text;
@@ -435,7 +542,7 @@ export default function App() {
     if (model) {
       const meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = model;
+      meta.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;"><path d="M12 2v4" /><rect x="7" y="8" width="10" height="8" rx="2" /><circle cx="10" cy="12" r="1" /><circle cx="14" cy="12" r="1" /><path d="M10 15h4" /></svg> Assistant · ' + model;
       wrap.appendChild(meta);
     }
   const bubble = document.createElement('div');
@@ -502,7 +609,11 @@ export default function App() {
   function renderMarkdownLike(text: string) {
     // First, extract and store code blocks before escaping HTML
     const codeBlocks: Array<{placeholder: string, html: string}> = [];
+    const calloutBlocks: Array<{placeholder: string, html: string}> = [];
+    const tableBlocks: Array<{placeholder: string, html: string}> = [];
     let codeBlockIndex = 0;
+    let calloutIndex = 0;
+    let tableIndex = 0;
     
     // Extract code blocks and replace with placeholders
     let processedText = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
@@ -560,8 +671,94 @@ export default function App() {
       return placeholder;
     });
     
+    // Extract GitHub-style callouts with blockquote markers, e.g., > [!NOTE] Title\n> body
+    processedText = processedText.replace(/^>\s*\[!([A-Z]+)\]\s*(.*)(?:\n((?:>.*\n?)*))?/gm, (_m, type, title, body) => {
+      const t = String(type || '').toLowerCase();
+      const kind = t === 'tip' ? 'tip' : t === 'warning' ? 'warning' : t === 'info' ? 'info' : t === 'success' ? 'success' : t === 'failure' ? 'failure' : 'note';
+      const bodyText = (body || '')
+        .split(/\n/)
+        .map((l: string) => l.replace(/^>\s?/, ''))
+        .join('\n');
+      const safeTitle = escapeHtml(title || '');
+      const safeBody = escapeHtml(bodyText).replace(/\n/g, '<br/>');
+      const icon = kind === 'warning'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        : kind === 'tip'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M2 12a10 10 0 1 1 20 0c0 3.53-1.53 5.74-4 7-1.5.86-2 2-2 3h-4c0-1-.5-2.14-2-3-2.47-1.26-4-3.47-4-7z"/></svg>'
+        : kind === 'success'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>'
+        : kind === 'failure'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+      const html = `<div class="callout ${kind}"><div class="icon">${icon}</div><div class="content">${safeTitle ? `<div class=\"title\">${safeTitle}</div>` : ''}${safeBody ? `<div class=\"body\">${safeBody}</div>` : ''}</div></div>`;
+      const placeholder = `___CALLOUT_${calloutIndex}___`;
+      calloutBlocks.push({ placeholder, html });
+      calloutIndex++;
+      return placeholder;
+    });
+
+    // Extract :::callout blocks (e.g., :::note ... :::)
+    processedText = processedText.replace(/^:::(note|tip|warning|info|success|failure)\s*\n([\s\S]*?)\n:::/gim, (_m, t, body) => {
+      const kind = String(t || '').toLowerCase();
+      const safeBody = escapeHtml(body || '').replace(/\n/g, '<br/>');
+      const icon = kind === 'warning'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        : kind === 'tip'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M2 12a10 10 0 1 1 20 0c0 3.53-1.53 5.74-4 7-1.5.86-2 2-2 3h-4c0-1-.5-2.14-2-3-2.47-1.26-4-3.47-4-7z"/></svg>'
+        : kind === 'success'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>'
+        : kind === 'failure'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+      const html = `<div class="callout ${kind}"><div class="icon">${icon}</div><div class="content"><div class=\"body\">${safeBody}</div></div></div>`;
+      const placeholder = `___CALLOUT_${calloutIndex}___`;
+      calloutBlocks.push({ placeholder, html });
+      calloutIndex++;
+      return placeholder;
+    });
+
+    // Extract simple Markdown tables with alignment support
+    processedText = processedText.replace(/^(\|.+\|)\n(\|[ \t:.-]+\|)\n((?:\|.*\|\n?)*)/gm, (_m, headerRow, sepRow, bodyRows) => {
+      const headerCells = String(headerRow).trim().slice(1, -1).split('|').map((h: string) => h.trim());
+      const sepCells = String(sepRow).trim().slice(1, -1).split('|').map((s: string) => s.trim());
+      const alignments = sepCells.map((s: string) => {
+        const left = s.startsWith(':');
+        const right = s.endsWith(':');
+        if (left && right) return 'center';
+        if (right) return 'right';
+        if (left) return 'left';
+        return 'left';
+      });
+      // Column width hints in header: e.g., "Name {120px}" or "Ratio {30%}"
+      const widthHints: Record<number, string> = {};
+      const headerClean = headerCells.map((h: string, i: number) => {
+        const m = h.match(/\{\s*([0-9]+(?:px|%)?)\s*\}$/);
+        if (m) {
+          widthHints[i] = m[1];
+          h = h.replace(/\{\s*[0-9]+(?:px|%)?\s*\}$/, '').trim();
+        }
+        return h;
+      });
+      const headers = headerClean.map((h: string, i: number) => `<th style=\"text-align:${alignments[i] || 'left'};${widthHints[i] ? ` width:${widthHints[i]};` : ''}\">${escapeHtml(h)}</th>`);
+      const rows = String(bodyRows || '')
+        .split(/\n/)
+        .filter((r) => r.trim().startsWith('|'))
+        .map((r) => r.trim().slice(1, -1).split('|').map((c) => escapeHtml(c.trim())));
+      const tbodyRows = rows.map((cells) => {
+        return `<tr>${cells.map((c, i) => `<td style=\"text-align:${alignments[i] || 'left'};${widthHints[i] ? ` width:${widthHints[i]};` : ''}\">${c}</td>`).join('')}</tr>`;
+      }).join('');
+  const thead = `<thead><tr>${headers.join('')}</tr></thead>`;
+  const tbody = `<tbody>${tbodyRows}</tbody>`;
+  const tableClass = `md-table${compactTables ? ' compact' : ''}${stripedTables ? ' striped' : ''}`;
+  const html = `<table class=\"${tableClass}\">${thead}${tbody}</table>`;
+      const placeholder = `___TABLE_${tableIndex}___`;
+      tableBlocks.push({ placeholder, html });
+      tableIndex++;
+      return placeholder;
+    });
+    
     // Now escape HTML for the rest of the content
-    let html = escapeHtml(processedText);
+  let html = escapeHtml(processedText);
     
     // Handle inline code
     html = html.replace(/`([^`]+)`/g, (_m, c) => `<code class="inline-code">${escapeHtml(c)}</code>`);
@@ -572,9 +769,14 @@ export default function App() {
     // Handle italic
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     
-    // Handle lists
-    html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+    // Handle unordered lists
+    html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li class="ul">$1</li>');
+    html = html.replace(/(?:^|\n)((?:\s*<li class=\"ul\">.*<\/li>\s*)+)/g, (_m, block) => `\n<ul>\n${block}\n</ul>`);
+    // Handle ordered lists (1. or 1)
+    html = html.replace(/^\s*\d+[.)]?\s+(.+)$/gm, '<li class="ol">$1</li>');
+    html = html.replace(/(?:^|\n)((?:\s*<li class=\"ol\">.*<\/li>\s*)+)/g, (_m, block) => `\n<ol>\n${block}\n</ol>`);
+    // Cleanup list item classes
+    html = html.replace(/<li class=\"ul\">/g, '<li>').replace(/<li class=\"ol\">/g, '<li>');
     
     // Handle headers
     html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
@@ -591,10 +793,31 @@ export default function App() {
         return `<p>${p.replace(/\n/g, '<br/>')}</p>`;
       })
       .join('');
+
+    // Convert prefix-style callouts like "Note:", "Tip:", "Warning:", "Info:", "Success:", "Failure:" paragraphs into callout blocks
+    html = html.replace(/<p>(?:<strong>)?(Note|Tip|Warning|Info|Success|Failure):(?:<\/strong>)?\s*([\s\S]*?)<\/p>/gi, (_m, k, body) => {
+      const kind = String(k || 'note').toLowerCase();
+      const icon = kind === 'warning'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        : kind === 'tip'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M2 12a10 10 0 1 1 20 0c0 3.53-1.53 5.74-4 7-1.5.86-2 2-2 3h-4c0-1-.5-2.14-2-3-2.47-1.26-4-3.47-4-7z"/></svg>'
+        : kind === 'success'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>'
+        : kind === 'failure'
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+      return `<div class="callout ${kind}"><div class="icon">${icon}</div><div class="content"><div class=\"body\">${body}</div></div></div>`;
+    });
     
-    // Restore code blocks
+    // Restore code blocks, tables, and callouts
     codeBlocks.forEach(({ placeholder, html: codeBlockHtml }) => {
       html = html.replace(placeholder, codeBlockHtml);
+    });
+    tableBlocks.forEach(({ placeholder, html: tableHtml }) => {
+      html = html.replace(placeholder, tableHtml);
+    });
+    calloutBlocks.forEach(({ placeholder, html: calloutHtml }) => {
+      html = html.replace(placeholder, calloutHtml);
     });
       
     return html;
@@ -753,12 +976,15 @@ export default function App() {
       insertBtn.addEventListener('click', () => {
         const codeBase64 = pre.getAttribute('data-code-base64') || '';
         const code = decodeURIComponent(escape(atob(codeBase64)));
-        const modeBtn = document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement;
-        const currentMode = modeBtn?.dataset?.mode || 'read';
-        const currentModel = selected || (models.length > 0 ? models[0] : 'auto');
-        console.log('Insert clicked - Mode:', currentMode, 'Model:', currentModel, 'selected:', selected, 'models:', models);
+        // Use a ref to avoid stale closures
+        const currentMode = modeRef.current;
+        const currentModel = selected || (models.length > 0 ? models[0] : '');
+        if (DEBUG) console.log('Insert clicked - Mode:', currentMode, 'Model:', currentModel || '(none)', 'selected:', selected, 'models:', models);
+        try { startActivity('insert-' + Date.now(), 'Inserting code…', { autoDoneAfter: 900, autoRemoveAfter: 700 }); } catch {}
         // Send even if no model - backend will handle it
-        try { vscode.postMessage({ type: 'insertText', text: code, mode: currentMode, model: currentModel }); } catch {}
+        const payload: any = { type: 'insertText', text: code, mode: currentMode };
+        if (currentModel) payload.model = currentModel;
+        try { vscode.postMessage(payload); } catch {}
       });
       buttonGroup.appendChild(insertBtn);
 
@@ -769,17 +995,41 @@ export default function App() {
       applyBtn.addEventListener('click', () => {
         const codeBase64 = pre.getAttribute('data-code-base64') || '';
         const code = decodeURIComponent(escape(atob(codeBase64)));
-        const modeBtn = document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement;
-        const currentMode = modeBtn?.dataset?.mode || 'read';
-        const currentModel = selected || (models.length > 0 ? models[0] : 'auto');
-        console.log('Apply clicked - Mode:', currentMode, 'Model:', currentModel, 'selected:', selected, 'models:', models);
+        const currentMode = modeRef.current;
+        const currentModel = selected || (models.length > 0 ? models[0] : '');
+        if (DEBUG) console.log('Apply clicked - Mode:', currentMode, 'Model:', currentModel || '(none)', 'selected:', selected, 'models:', models);
+        try { startActivity('apply-' + Date.now(), 'Applying code…', { autoDoneAfter: 1100, autoRemoveAfter: 800 }); } catch {}
+        // Distinct animation overlay for Apply
+        try { showApplyOverlay(); } catch {}
         // Send even if no model - backend will handle it
-        try { vscode.postMessage({ type: 'applyCode', text: code, mode: currentMode, model: currentModel }); } catch {}
+        const payload: any = { type: 'applyCode', text: code, mode: currentMode };
+        if (currentModel) payload.model = currentModel;
+        try { vscode.postMessage(payload); } catch {}
       });
       buttonGroup.appendChild(applyBtn);
       
       header.appendChild(buttonGroup);
       pre.insertBefore(header, pre.firstChild);
+
+      // Fallback: if tokens didn't render (e.g., theme override or missing markup), force Prism to re-highlight
+      try {
+        const codeEl = pre.querySelector('code');
+        const hasTokens = !!codeEl && codeEl.innerHTML.includes('class="token"');
+        if (codeEl && !hasTokens) {
+          const codeBase64 = pre.getAttribute('data-code-base64') || '';
+          const original = decodeURIComponent(escape(atob(codeBase64)));
+          // Reset to raw and ask Prism to highlight
+          codeEl.textContent = original;
+          const langClass = `language-${lang || 'javascript'}`;
+          codeEl.className = langClass;
+          if ((Prism as any).highlightElement) {
+            (Prism as any).highlightElement(codeEl);
+          } else if ((Prism as any).highlight) {
+            const grammar = (Prism.languages as any)[lang] || (Prism.languages as any)['javascript'] || (Prism.languages as any)['markup'];
+            codeEl.innerHTML = (Prism as any).highlight(original, grammar, lang || 'javascript');
+          }
+        }
+      } catch {}
     });
 
     // Re-add the copy-all button
@@ -824,15 +1074,16 @@ export default function App() {
         apply.className = 'send';
         apply.textContent = 'Apply edits';
         apply.addEventListener('click', () => {
-          const currentMode = (document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement)?.dataset?.mode || 'read';
+          const currentMode = modeRef.current;
+          try { startActivity('applyedits-' + Date.now(), 'Applying edits…', { autoDoneAfter: 1200, autoRemoveAfter: 900 }); } catch {}
+          try { showApplyOverlay(); } catch {}
           vscode.postMessage({ type: 'applyEdits', payload, mode: currentMode });
         });
         actions.appendChild(review);
         actions.appendChild(apply);
         lastAssistant.parentElement?.appendChild(actions);
-        const currentMode = (document.querySelector('.mode-toggle .mode-btn.active') as HTMLElement)?.dataset?.mode || 'read';
-        if (currentMode === 'agent') {
-          vscode.postMessage({ type: 'applyEdits', payload, mode: currentMode });
+        if (modeRef.current === 'agent') {
+          vscode.postMessage({ type: 'applyEdits', payload, mode: modeRef.current });
         }
       }
     } catch {}
@@ -913,7 +1164,7 @@ export default function App() {
   }
 
   function persistState(thrs: Thread[], id: string, history: boolean) {
-    try { vscode.setState?.({ threads: thrs, currentId: id, historyOpen: history }); } catch {}
+    try { vscode.setState?.({ threads: thrs, currentId: id, historyOpen: history, autoHideHistory, compactTables, stripedTables }); } catch {}
     try { vscode.postMessage({ type: 'threadsUpdate', threads: thrs, currentId: id }); } catch {}
   }
 
@@ -921,12 +1172,40 @@ export default function App() {
     
     persistState(threads, currentId, historyOpen);
     
-  }, [historyOpen]);
+  }, [historyOpen, autoHideHistory, compactTables, stripedTables]);
 
   // After initial state is established, publish once so left panel can render
   useEffect(() => {
     try { vscode.postMessage({ type: 'threadsUpdate', threads, currentId }); } catch {}
   }, [currentId]);
+
+  // Auto-hide history on narrow panes if enabled; restore when wide again
+  useEffect(() => {
+    const threshold = 720;
+    const wasNarrow = { current: window.innerWidth <= threshold } as { current: boolean };
+    const autoCollapsed = { current: false } as { current: boolean };
+    const onResize = () => {
+      if (!autoHideHistory) return;
+      const isNarrow = window.innerWidth <= threshold;
+      if (!wasNarrow.current && isNarrow) {
+        // just got narrow
+        if (historyOpen) {
+          autoCollapsed.current = true;
+          setHistoryOpen(false);
+        }
+      } else if (wasNarrow.current && !isNarrow) {
+        // just got wide
+        if (autoCollapsed.current && !historyOpen) {
+          setHistoryOpen(true);
+        }
+        autoCollapsed.current = false;
+      }
+      wasNarrow.current = isNarrow;
+    };
+    window.addEventListener('resize', onResize);
+    onResize();
+    return () => window.removeEventListener('resize', onResize);
+  }, [autoHideHistory, historyOpen]);
 
   return (
     <div className="panel">
@@ -1035,18 +1314,14 @@ export default function App() {
               </svg>
             </button>
             <button
-              className={`icon-btn ${mode === 'agent' ? 'active' : ''}`}
+              className={`icon-btn agent ${mode === 'agent' ? 'active' : ''}`}
               data-mode="agent"
               onClick={() => toggleMode('agent')}
-              title="Agent mode"
+              title="Agent mode: can modify files"
               aria-label="Agent mode"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="11" width="18" height="10" rx="2" />
-                <circle cx="12" cy="6" r="2" />
-                <path d="M12 8v3" />
-                <line x1="8" y1="16" x2="8" y2="16" />
-                <line x1="16" y1="16" x2="16" y2="16" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14.7 6.3a4 4 0 0 1-5.66 5.66L3 18v3h3l6.04-6.04a4 4 0 0 0 5.66-5.66l-2.12 2.12-2.83-2.83 2.12-2.12z"/>
               </svg>
             </button>
           </div>
@@ -1064,6 +1339,16 @@ export default function App() {
           </button>
         </div>
       </div>
+      {activities.length > 0 && (
+        <div className="activity-bar" role="status" aria-live="polite">
+          {activities.map((a) => (
+            <span key={a.id} className={`activity-pill ${a.status}`}>
+              <span className={`dot ${a.status}`} />
+              {a.text}
+            </span>
+          ))}
+        </div>
+      )}
       <div className={`layout ${historyOpen ? 'with-history' : ''}`}>
         <aside className="history" aria-label="Conversations">
           <div className="history-header">
@@ -1117,6 +1402,33 @@ export default function App() {
                   <span>API Key (Optional)</span>
                   <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Optional API Key" />
                 </label>
+                  <div className="settings-display" style={{ marginTop: 12 }}>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: 14 }}>Display</h3>
+                    <label className="readme-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={autoHideHistory}
+                        onChange={(e) => setAutoHideHistory(e.target.checked)}
+                      />
+                      <span>Auto-hide history on narrow panes</span>
+                    </label>
+                    <label className="readme-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={compactTables}
+                        onChange={(e) => setCompactTables(e.target.checked)}
+                      />
+                      <span>Compact tables</span>
+                    </label>
+                    <label className="readme-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={stripedTables}
+                        onChange={(e) => setStripedTables(e.target.checked)}
+                      />
+                      <span>Striped tables</span>
+                    </label>
+                  </div>
                 <button className="send" onClick={saveSettings} disabled={savingSettings} style={{ width: '100%', marginTop: 8 }}>
                   {savingSettings ? <><span className="spinner" /> Saving...</> : 'Save Settings'}
                 </button>
@@ -1242,7 +1554,7 @@ export default function App() {
             </div>
           )}
           <div id="content" ref={contentRef} className="content" aria-live="polite" />
-          {mode === 'agent' && (
+          {(mode === 'agent') && (
             <div style={{ 
               padding: '8px 16px', 
               background: 'var(--color-bg-secondary)', 
@@ -1361,6 +1673,8 @@ export default function App() {
             </button>
         <textarea
           className="prompt"
+          ref={promptRef}
+          rows={1}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder={
@@ -1370,10 +1684,12 @@ export default function App() {
           }
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
+              if (pending > 0 || status === 'Streaming') { e.preventDefault(); return; }
               e.preventDefault();
               send();
             }
           }}
+          readOnly={pending > 0 || status === 'Streaming'}
         />
           <button
             className="send"
@@ -1394,12 +1710,31 @@ export default function App() {
                 <span className="send-label">Sending…</span>
               </span>
             ) : (
-              <span className="send-label">Send</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span className="send-icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                </span>
+                <span className="send-label">Send</span>
+              </span>
             ))}
           </button>
           </div>
         </main>
       </div>
+      {applying && (
+        <div className="apply-overlay" role="status" aria-live="polite">
+          <span className="apply-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14.7 6.3a4 4 0 0 1-5.66 5.66L3 18v3h3l6.04-6.04a4 4 0 0 0 5.66-5.66l-2.12 2.12-2.83-2.83 2.12-2.12z"/>
+            </svg>
+          </span>
+          <span className="apply-text">Applying changes…</span>
+          <span className="apply-bar" aria-hidden="true" />
+        </div>
+      )}
     </div>
   );
 }
