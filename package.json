@@ -46,6 +46,16 @@
     "configuration": {
       "title": "Ollama Agent",
       "properties": {
+        "ollamaAgent.applyPreviewAlways": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always open a preview diff when applying code from the chat before writing changes."
+        },
+        "ollamaAgent.largeFileThresholdBytes": {
+          "type": "number",
+          "default": 200000,
+          "description": "Files at or above this size will use a minimal surgical range edit in the preview instead of a full-file rewrite."
+        },
         "ollamaAgent.host": {
           "type": "string",
           "default": "localhost",

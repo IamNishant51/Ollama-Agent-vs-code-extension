@@ -768,6 +768,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
       await vscode.workspace.applyEdit(we);
+      try {
+        // Notify chat webview to conclude the apply overlay lifecycle
+        chatPanel.postMessage({ type: 'agentActivity', id: `saved-${Date.now()}`, text: 'Saved changes' });
+      } catch {}
     })
   );
 }

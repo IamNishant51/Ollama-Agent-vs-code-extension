@@ -466,6 +466,8 @@ ${snapshot}`;
         case 'applyCode': {
           const snippet: string = msg.text || '';
           const cfg = vscode.workspace.getConfiguration('ollamaAgent');
+          const previewAlways = cfg.get<boolean>('applyPreviewAlways', true);
+          const largeThreshold = cfg.get<number>('largeFileThresholdBytes', 200000);
           const effectiveMode = cfg.get<string>('mode', 'read');
           console.log('applyCode received - uiMode:', msg.mode, 'effectiveMode:', effectiveMode, 'text length:', snippet.length);
           
@@ -531,14 +533,43 @@ REQUIREMENTS:
             merged = (merged || '').trim().replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '');
             if (!merged) { throw new Error('Model returned empty content'); }
 
-            this.panel?.webview.postMessage({ type: 'agentActivity', id: `write-${Date.now()}`, text: `Writing changes to ${filePath}…` });
-            await editor.edit((eb) => {
-              const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
-              eb.replace(full, merged);
-            });
-            // Summarize in assistant bubble
-            this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `✅ Applied snippet to ${filePath}.` });
-            this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+            // Always preview before writing; for very large files, create a minimal range edit
+            const openPreview = async () => {
+              const uriStr = document.uri.toString();
+              let changes: any[] = [];
+              if (Buffer.byteLength(original, 'utf8') >= largeThreshold) {
+                // Compute a single minimal range diff edit
+                const edit = computeMinimalRangeEdit(document, original, merged);
+                if (!edit) {
+                  // If no difference detected, short-circuit
+                  this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ No changes detected for ${filePath}.` });
+                  this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+                  return;
+                }
+                changes = [{ uri: uriStr, range: edit.range, newText: edit.newText }];
+              } else {
+                // Full-file replacement as a single change
+                changes = [{ uri: uriStr, newText: merged }];
+              }
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `preview-${Date.now()}`, text: `Opening preview for ${filePath}…` });
+              await vscode.commands.executeCommand('ollamaAgent.previewEdits', { changes });
+              // Inform user in the bubble
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `ℹ️ Opened a preview to apply changes to ${filePath}.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+            };
+
+            if (previewAlways) {
+              await openPreview();
+            } else {
+              // Fallback path: direct write (not default)
+              this.panel?.webview.postMessage({ type: 'agentActivity', id: `write-${Date.now()}`, text: `Writing changes to ${filePath}…` });
+              await editor.edit((eb) => {
+                const full = new vscode.Range(document.positionAt(0), document.positionAt(original.length));
+                eb.replace(full, merged);
+              });
+              this.panel?.webview.postMessage({ type: 'chatChunk', model: modelLabel, text: `✅ Applied snippet to ${filePath}.` });
+              this.panel?.webview.postMessage({ type: 'chatDone', model: modelLabel });
+            }
           } catch (e: any) {
             const msgText = String(e?.message || e || '').toLowerCase();
             const isEmpty = msgText.includes('empty content') || msgText.includes('no model available');
@@ -1496,6 +1527,42 @@ ASSISTANT: ${this.assistantBuffer}`;
     this.show(vscode.ViewColumn.Beside);
     this.prefill(prompt);
   }
+}
+
+// Compute a minimal single-range edit between two strings.
+// Returns a range (line/character, 0-based) relative to the ORIGINAL document
+// and the replacement text for that range. If texts are identical, returns null.
+function computeMinimalRangeEdit(
+  document: vscode.TextDocument,
+  original: string,
+  updated: string
+): { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string } | null {
+  if (original === updated) { return null; }
+  const origLen = original.length;
+  const updLen = updated.length;
+  let i = 0;
+  const maxPrefix = Math.min(origLen, updLen);
+  while (i < maxPrefix && original.charCodeAt(i) === updated.charCodeAt(i)) { i++; }
+  let suffix = 0;
+  while (
+    suffix < (origLen - i) &&
+    suffix < (updLen - i) &&
+    original.charCodeAt(origLen - 1 - suffix) === updated.charCodeAt(updLen - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  const startOffset = i;
+  const endOffset = origLen - suffix;
+  const newText = updated.slice(i, updLen - suffix);
+  const startPos = document.positionAt(startOffset);
+  const endPos = document.positionAt(endOffset);
+  return {
+    range: {
+      start: { line: startPos.line, character: startPos.character },
+      end: { line: endPos.line, character: endPos.character },
+    },
+    newText,
+  };
 }
 
 function getNonce() {

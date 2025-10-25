@@ -117,11 +117,14 @@ export default function App() {
     if (applyTimerRef.current) {
       try { window.clearTimeout(applyTimerRef.current); } catch {}
     }
-    // Use window.setTimeout for DOM timer id type
-    applyTimerRef.current = window.setTimeout(() => {
-      try { setApplying(false); } catch {}
-      applyTimerRef.current = null;
-    }, duration) as unknown as number;
+    // duration <= 0 means keep overlay until explicitly hidden by a "done" event
+    if (duration > 0) {
+      // Use window.setTimeout for DOM timer id type
+      applyTimerRef.current = window.setTimeout(() => {
+        try { setApplying(false); } catch {}
+        applyTimerRef.current = null;
+      }, duration) as unknown as number;
+    }
   }
   function hideApplyOverlay() {
     if (applyTimerRef.current) {
@@ -239,20 +242,19 @@ export default function App() {
           finalizeLastAssistant();
           // Mark activity done and fade out later
           try { completeActivity('gen', 1500); } catch {}
-          // If an apply overlay is somehow still visible, hide it now
-          hideApplyOverlay();
           saveSnapshot();
           break;
         case 'agentActivity': {
           const id = String(msg.id || `act-${Date.now()}`);
           const text = String(msg.text || 'Working…');
-          try { startActivity(id, text, { autoDoneAfter: 1400, autoRemoveAfter: 800 }); } catch {}
+          try { startActivity(id, text, { autoDoneAfter: 2400, autoRemoveAfter: 1400 }); } catch {}
           // Improved heuristic: show overlay on start verbs, hide on completion verbs
           const tl = text.toLowerCase();
           const startLike = /(apply|applying|merge|merging|write|writing|save|saving|update|updating)/.test(tl);
           const doneLike = /(applied|merged|wrote|written|saved|completed|complete|done|success|succeeded)/.test(tl);
           if (startLike && !doneLike) {
-            showApplyOverlay();
+            // Keep overlay visible until an explicit done-like event arrives
+            showApplyOverlay(0);
           } else if (doneLike) {
             setTimeout(() => hideApplyOverlay(), 400);
           }
@@ -980,9 +982,9 @@ export default function App() {
         const currentMode = modeRef.current;
         const currentModel = selected || (models.length > 0 ? models[0] : '');
         if (DEBUG) console.log('Insert clicked - Mode:', currentMode, 'Model:', currentModel || '(none)', 'selected:', selected, 'models:', models);
-        try { startActivity('insert-' + Date.now(), 'Inserting code…', { autoDoneAfter: 900, autoRemoveAfter: 700 }); } catch {}
-        // Distinct animation overlay for Insert
-        try { showApplyOverlay(); } catch {}
+  try { startActivity('insert-' + Date.now(), 'Inserting code…', { autoDoneAfter: 1800, autoRemoveAfter: 1200 }); } catch {}
+        // Distinct animation overlay for Insert - keep until saved
+        try { showApplyOverlay(0); } catch {}
         // Send even if no model - backend will handle it
         const payload: any = { type: 'insertText', text: code, mode: currentMode };
         if (currentModel) payload.model = currentModel;
@@ -1000,9 +1002,9 @@ export default function App() {
         const currentMode = modeRef.current;
         const currentModel = selected || (models.length > 0 ? models[0] : '');
         if (DEBUG) console.log('Apply clicked - Mode:', currentMode, 'Model:', currentModel || '(none)', 'selected:', selected, 'models:', models);
-        try { startActivity('apply-' + Date.now(), 'Applying code…', { autoDoneAfter: 1100, autoRemoveAfter: 800 }); } catch {}
-        // Distinct animation overlay for Apply
-        try { showApplyOverlay(); } catch {}
+  try { startActivity('apply-' + Date.now(), 'Applying code…', { autoDoneAfter: 2000, autoRemoveAfter: 1300 }); } catch {}
+        // Distinct animation overlay for Apply - keep until saved
+        try { showApplyOverlay(0); } catch {}
         // Send even if no model - backend will handle it
         const payload: any = { type: 'applyCode', text: code, mode: currentMode };
         if (currentModel) payload.model = currentModel;
@@ -1077,7 +1079,7 @@ export default function App() {
         apply.textContent = 'Apply edits';
         apply.addEventListener('click', () => {
           const currentMode = modeRef.current;
-          try { startActivity('applyedits-' + Date.now(), 'Applying edits…', { autoDoneAfter: 1200, autoRemoveAfter: 900 }); } catch {}
+          try { startActivity('applyedits-' + Date.now(), 'Applying edits…', { autoDoneAfter: 2200, autoRemoveAfter: 1400 }); } catch {}
           try { showApplyOverlay(); } catch {}
           vscode.postMessage({ type: 'applyEdits', payload, mode: currentMode });
         });
