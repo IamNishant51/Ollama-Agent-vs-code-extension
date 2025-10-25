@@ -931,37 +931,17 @@ export default function App() {
   return (
     <div className="panel">
       {(sending || pending > 0) && <div className="progress" aria-hidden="true" />}
-      <div className="toolbar">
-        <span className="title">Ollama</span>
-        <div className="model">
-          <span className="model-label">Model {mode === 'combine' ? '1' : ''}</span>
-          <div className="select-wrap">
-            <select
-              className="select"
-              value={selected}
-              onChange={(e) => setSelected(e.target.value)}
-              disabled={models.length === 0}
-            >
-              {models.length === 0 ? (
-                <option value="">No models</option>
-              ) : (
-                models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-        </div>
-        {mode === 'combine' && (
-          <div className="model">
-            <span className="model-label">Model 2</span>
+      <div className="copilot-header">
+        <div className="left">
+          <span className="brand">Ollama</span>
+          <span className="divider" aria-hidden="true" />
+          <div className="model-select">
+            <span className="model-label">Model</span>
             <div className="select-wrap">
               <select
                 className="select"
-                value={selected2}
-                onChange={(e) => setSelected2(e.target.value)}
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
                 disabled={models.length === 0}
               >
                 {models.length === 0 ? (
@@ -975,162 +955,114 @@ export default function App() {
                 )}
               </select>
             </div>
+            {mode === 'combine' && (
+              <div className="select-wrap" style={{ marginLeft: 8 }}>
+                <select
+                  className="select"
+                  value={selected2}
+                  onChange={(e) => setSelected2(e.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.length === 0 ? (
+                    <option value="">No models</option>
+                  ) : (
+                    models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            )}
           </div>
-        )}
-        <span className={`tag ${status === 'Stopped' ? 'stopped' : ''}`}>
-          {paused ? 'Paused' : status}
-          {(!paused && status === 'Streaming') ? <span className="dot-pulse" /> : null}
-        </span>
-        <span className="spacer" />
-        
-        {/* AI Code Actions - Cursor/Copilot style */}
-        <button className="btn" onClick={handleExplainCode} title="Explain selected code">
-          <span className="btn-icon" aria-hidden="true">
+          <div className={`status ${status.toLowerCase()}`}>
+            <span className={`status-dot ${paused ? 'paused' : status.toLowerCase()}`} />
+            <span className="status-text">{paused ? 'Paused' : status}</span>
+          </div>
+        </div>
+        <div className="right">
+          <button className="icon-btn" title="New chat" onClick={newChat} aria-label="New chat">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14"/>
+              <path d="M5 12h14"/>
+            </svg>
+          </button>
+          <button
+            className={`icon-btn ${historyOpen ? 'active' : ''}`}
+            title="Toggle history"
+            aria-label="Toggle history"
+            onClick={() => setHistoryOpen((v) => !v)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="7" height="16" rx="1" />
+              <rect x="14" y="4" width="7" height="16" rx="1" />
+            </svg>
+          </button>
+          <label className="chatapi-toggle" title="Use Chat API">
+            <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} />
+            <svg className="lock" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="11" width="18" height="10" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            <span>Chat API</span>
+          </label>
+          {(sending || pending > 0) && (
+            <button className="icon-btn" onClick={togglePause} title={paused ? 'Resume' : 'Pause'} aria-label="Pause or resume">
+              {paused ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="6" y="4" width="4" height="16" />
+                  <rect x="14" y="4" width="4" height="16" />
+                </svg>
+              )}
+            </button>
+          )}
+          <div className="mode-icons">
+            <button
+              className={`icon-btn ${mode === 'read' ? 'active' : ''}`}
+              data-mode="read"
+              onClick={() => toggleMode('read')}
+              title="Read mode"
+              aria-label="Read mode"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M2 7a4 4 0 0 1 4-4h6v18H6a4 4 0 0 1-4-4Z"/>
+                <path d="M22 7a4 4 0 0 0-4-4h-6v18h6a4 4 0 0 0 4-4Z"/>
+              </svg>
+            </button>
+            <button
+              className={`icon-btn ${mode === 'agent' ? 'active' : ''}`}
+              data-mode="agent"
+              onClick={() => toggleMode('agent')}
+              title="Agent mode"
+              aria-label="Agent mode"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="11" width="18" height="10" rx="2" />
+                <circle cx="12" cy="6" r="2" />
+                <path d="M12 8v3" />
+                <line x1="8" y1="16" x2="8" y2="16" />
+                <line x1="16" y1="16" x2="16" y2="16" />
+              </svg>
+            </button>
+          </div>
+          <button
+            className="icon-btn"
+            onClick={() => setShowHelp(!showHelp)}
+            title="Help"
+            aria-label="Help"
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10"/>
               <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
               <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
-          </span>
-          <span className="btn-text">Explain</span>
-        </button>
-        
-        <button className="btn" onClick={handleFixCode} title="Fix issues in code">
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <path d="M14 2v6h6"/>
-              <path d="M12 18v-6"/>
-              <path d="m9 15 3 3 3-3"/>
-            </svg>
-          </span>
-          <span className="btn-text">Fix</span>
-        </button>
-        
-        <button className="btn" onClick={handleOptimizeCode} title="Optimize code performance">
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-          </span>
-          <span className="btn-text">Optimize</span>
-        </button>
-        
-        <button className="btn" onClick={handleGenerateTests} title="Generate unit tests">
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-              <polyline points="22 4 12 14.01 9 11.01"/>
-            </svg>
-          </span>
-          <span className="btn-text">Tests</span>
-        </button>
-        
-        <button className="btn" onClick={handleRefactorCode} title="Refactor code">
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 20v-6M6 20V10M18 20V4"/>
-              <circle cx="12" cy="8" r="2"/>
-              <circle cx="6" cy="4" r="2"/>
-              <circle cx="18" cy="20" r="2"/>
-            </svg>
-          </span>
-          <span className="btn-text">Refactor</span>
-        </button>
-        
-        <button className="btn" onClick={handleAddComments} title="Add comments">
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-          </span>
-          <span className="btn-text">Comment</span>
-        </button>
-        
-        <button className="btn" onClick={() => setShowReadme((v) => !v)}>
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-              <path d="M4 4v15.5"/>
-              <path d="M8 4h12v13H6.5A2.5 2.5 0 0 0 4 19.5"/>
-            </svg>
-          </span>
-          <span className="btn-text">README</span>
-        </button>
-        {(sending || pending > 0) && (
-          <button className="btn" onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
-        )}
-        <button 
-          className={`btn ${mode === 'combine' ? 'combine-active' : ''}`}
-          onClick={() => toggleMode('combine')}
-          title="Combine two AI models for better responses"
-        >
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M16 3h5v5"/>
-              <path d="M8 21H3v-5"/>
-              <path d="M21 3 14.5 9.5"/>
-              <path d="M3 21 9.5 14.5"/>
-            </svg>
-          </span>
-          <span className="btn-text">Combine Mode</span>
-        </button>
-        <button className="btn secondary" onClick={newChat}>
-          <span className="btn-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 5v14"/>
-              <path d="M5 12h14"/>
-            </svg>
-          </span>
-          <span className="btn-text">New Chat</span>
-        </button>
-        <div className="mode-toggle">
-          <button className={`mode-btn ${mode === 'read' ? 'active' : ''}`} data-mode="read" onClick={() => toggleMode('read')}>
-            <span className="btn-icon" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2 7a4 4 0 0 1 4-4h6v18H6a4 4 0 0 1-4-4Z"/>
-                <path d="M22 7a4 4 0 0 0-4-4h-6v18h6a4 4 0 0 0 4-4Z"/>
-              </svg>
-            </span>
-            <span className="btn-text">Read</span>
-          </button>
-          <button className={`mode-btn ${mode === 'agent' ? 'active' : ''}`} data-mode="agent" onClick={() => toggleMode('agent')}>
-            <span className="btn-icon" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="10" rx="2"/>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                <path d="M8 15h0"/>
-                <path d="M16 15h0"/>
-              </svg>
-            </span>
-            <span className="btn-text">Agent</span>
           </button>
         </div>
-        <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={useChat} onChange={(e) => setUseChat(e.target.checked)} /> Chat API
-        </label>
-        <button 
-          className="btn" 
-          onClick={() => setShowHelp(!showHelp)}
-          title="Show keyboard shortcuts and help"
-          style={{ padding: '6px 12px' }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-        </button>
-        {mode === 'agent' && (
-          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', opacity: 0.7, fontSize: '11px', alignItems: 'center' }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            <span>Agent Mode: Can modify files</span>
-          </div>
-        )}
       </div>
       <div className={`layout ${historyOpen ? 'with-history' : ''}`}>
         <aside className="history" aria-label="Conversations">
@@ -1196,7 +1128,7 @@ export default function App() {
           {showHelp && (
             <div className="readme-form" style={{ maxWidth: '700px', margin: '20px auto' }}>
               <div className="readme-header">
-                <h3>🚀 Cursor/Copilot Features & Shortcuts</h3>
+                <h3>🚀 Ollama Agent Features & Shortcuts</h3>
                 <button className="close-btn" onClick={() => setShowHelp(false)} title="Close" aria-label="Close">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M18 6 6 18"/>
@@ -1447,15 +1379,23 @@ export default function App() {
             className="send"
             onClick={() => (pending > 0 ? stop() : send())}
             disabled={sending && pending === 0}
+            aria-label={pending > 0 ? 'Stop' : (sending ? 'Sending' : 'Send')}
           >
             {pending > 0 ? (
               <span style={{ color: '#1a1a1a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                   <rect x="3" y="3" width="10" height="10" rx="2" />
                 </svg>
-                Stop
+                <span className="stop-label">Stop</span>
               </span>
-            ) : (sending ? <><span className="spinner" /> Sending…</> : 'Send')}
+            ) : (sending ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span className="spinner" />
+                <span className="send-label">Sending…</span>
+              </span>
+            ) : (
+              <span className="send-label">Send</span>
+            ))}
           </button>
           </div>
         </main>
