@@ -43,6 +43,16 @@
     "configuration": {
       "title": "Ollama Agent",
       "properties": {
+        "ollamaAgent.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional API key for non-Ollama providers (OpenAI/Anthropic/Google). Stored in User Settings."
+        },
+        "ollamaAgent.enableProjectIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Build a lightweight project index for smarter context and README generation."
+        },
         "ollamaAgent.applyPreviewAlways": {
           "type": "boolean",
           "default": false,

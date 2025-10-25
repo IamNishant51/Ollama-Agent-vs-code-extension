@@ -107,7 +107,7 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [autoHideHistory, setAutoHideHistory] = useState(true);
-  const [compactTables, setCompactTables] = useState(false);
+  const [compactTables, setCompactTables] = useState(true);
   const [stripedTables, setStripedTables] = useState(true);
   const [activities, setActivities] = useState<Array<{ id: string; text: string; status: 'running' | 'done' | 'error' }>>([]);
   // Distinct Apply animation overlay

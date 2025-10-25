@@ -273,7 +273,11 @@ export class OllamaChatPanel {
             // Relay to extension so it can update left view and persist
             await vscode.commands.executeCommand('ollamaAgent.threadsUpdate', {
               threads: msg.threads || [],
-              currentId: msg.currentId || ''
+              currentId: msg.currentId || '',
+              historyOpen: msg.historyOpen,
+              autoHideHistory: msg.autoHideHistory,
+              compactTables: msg.compactTables,
+              stripedTables: msg.stripedTables,
             });
           } catch {}
           break;
